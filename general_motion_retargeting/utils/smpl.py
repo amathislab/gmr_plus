@@ -17,6 +17,7 @@ from smplx.lbs import (
 
 import general_motion_retargeting.utils.lafan_vendor.utils as utils
 from general_motion_retargeting.utils.shape_fitting import load_fitted_shape
+from general_motion_retargeting.utils.shape_fitting import load_fitted_shape
 
 
 # SMPLH joint names (52 joints: 22 body + 30 hands)
@@ -246,21 +247,14 @@ def load_smplh_file(smplh_file, smplh_body_model_path, fitted_shape_path=None):
 
     # Get betas - use fitted shape if provided, otherwise use data betas
     if fitted_shape_path is not None:
-        fitted_shape, fitted_scale, offset_z, height_scale, fitted_offsets = load_fitted_shape(fitted_shape_path)
+        fitted_shape, fitted_scale, fitted_metrics = load_fitted_shape(fitted_shape_path)
         betas = torch.from_numpy(fitted_shape).float()  # (1, 16)
         print(f"[load_smplh_file] Using fitted shape from {fitted_shape_path}")
         print(f"  Fitted scale: {fitted_scale[0]:.4f}, Beta[0]: {betas[0, 0]:.4f}")
-        print(f"  offset_z: {offset_z:.4f} m, height_scale: {height_scale:.4f}")
     else:
         betas = torch.tensor(smplh_data["betas"]).float()
         if betas.ndim == 1:
             betas = betas.view(1, -1)
-        # Truncate to 16 betas to match model (SMPL-H model created with num_betas=16)
-        if betas.shape[1] > 16:
-            betas = betas[:, :16]
-        offset_z = 0.0
-        height_scale = 1.0
-        fitted_offsets = None
 
     # Get translation
     trans = torch.tensor(smplh_data["trans"]).float()
@@ -300,8 +294,6 @@ def load_smplh_file(smplh_file, smplh_body_model_path, fitted_shape_path=None):
 
         # Store fitted_scale in smplh_data so GMR knows to skip additional scaling
         smplh_data["fitted_scale"] = fitted_scale_val
-        if 'offsets' not in smplh_data and fitted_offsets is not None:
-            smplh_data['offsets'] = fitted_offsets
 
     # Create output dict similar to smplx output with all necessary attributes
     class SMPLHOutput:

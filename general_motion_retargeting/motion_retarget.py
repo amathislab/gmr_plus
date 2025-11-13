@@ -23,7 +23,6 @@ class GeneralMotionRetargeting:
         verbose: bool=True,
         use_velocity_limit: bool=False,
         use_fitted_shape: bool=False,  # Whether using fitted shape
-        fitted_shape_path: str=None,
     ) -> None:
 
         # load the robot model
@@ -63,15 +62,7 @@ class GeneralMotionRetargeting:
             ik_config = json.load(f)
         if verbose:
             print("Use IK config: ", IK_CONFIG_DICT[src_human][tgt_robot])
-        # Auto-enable fitted shape if path is provided
-        if fitted_shape_path is not None and not use_fitted_shape:
-            use_fitted_shape = True
-            if verbose:
-                print(f"[GMR] Auto-enabled use_fitted_shape=True (fitted_shape_path provided)")
-
         self.use_fitted_shape = use_fitted_shape
-        self.fitted_shape_path = fitted_shape_path
-        self.learned_offsets = None
 
         # adjust the human scale table
         if use_fitted_shape:
@@ -81,28 +72,6 @@ class GeneralMotionRetargeting:
                 ik_config["human_scale_table"][key] = 1.0
             if verbose:
                 print(f"[GMR] Using fitted shape: fitted_scale already applied to SMPL joints, skipping manual scaling (scale_table=1.0)")
-            if fitted_shape_path is not None:
-                if verbose:
-                    print(f"[GMR] Attempting to load fitted shape from {fitted_shape_path}")
-                try:
-                    shape, scale, offset_z, height_scale, offsets = load_fitted_shape(fitted_shape_path)
-                    self.fitted_shape = shape
-                    self.fitted_scale = scale
-                    self.fitted_offset_z = offset_z
-                    self.fitted_height_scale = height_scale
-                    self.learned_offsets = offsets
-                    if verbose:
-                        print(f"[GMR] ✓ Loaded fitted shape successfully")
-                        print(f"  offset_z: {offset_z:.4f} m, height_scale: {height_scale:.4f}")
-                        print(f"  Offsets keys: {offsets.keys() if offsets else 'None'}")
-                        if offsets and "pos_offsets" in offsets:
-                            print(f"  ✓ Loaded learned offsets: {len(offsets['pos_offsets'])} joints")
-                except Exception as e:
-                    import traceback
-                    if verbose:
-                        print(f"[GMR] ✗ Failed to load fitted shape from {fitted_shape_path}")
-                        print(f"  Error: {e}")
-                        traceback.print_exc()
         else:
             # Without fitted shape, use height-based scaling
             if actual_human_height is not None:
