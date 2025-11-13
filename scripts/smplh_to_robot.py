@@ -59,15 +59,36 @@ if __name__ == "__main__":
         help="Limit the rate of the retargeted robot motion to keep the same as the human motion.",
     )
 
+    parser.add_argument(
+        "--fitted_shape",
+        type=str,
+        default=None,
+        help="Path to fitted shape parameters (.pkl). Auto-detects if available for the robot.",
+    )
+
     args = parser.parse_args()
 
     # Use local SMPL-H body models in assets folder
     SMPLH_FOLDER = HERE.parent / "assets" / "body_models" / "smplh"
 
+    # Auto-detect fitted shape if not provided
+    fitted_shape_path = args.fitted_shape
+    # Handle empty string to explicitly disable fitted shape
+    if fitted_shape_path == '':
+        fitted_shape_path = None
+        print("[Info] Fitted shape disabled, using height-based scaling")
+    elif fitted_shape_path is None:
+        # Try to find fitted shape for this robot
+        auto_fitted_path = HERE.parent / "assets" / "fitted_shapes" / f"{args.robot}_shape.pkl"
+        if auto_fitted_path.exists():
+            print(f"[Info] Found fitted shape at {auto_fitted_path}, using data-driven shape fitting")
+            fitted_shape_path = str(auto_fitted_path)
 
     # Load SMPL-H trajectory
+    # When fitted_shape_path is provided, load_smplh_file returns effective height
+    # computed from fitted scale, so GMR uses the fitted scale directly
     smplh_data, body_model, smplh_output, actual_human_height = load_smplh_file(
-        args.smplh_file, SMPLH_FOLDER
+        args.smplh_file, SMPLH_FOLDER, fitted_shape_path=fitted_shape_path
     )
 
     # align fps
@@ -80,6 +101,7 @@ if __name__ == "__main__":
         actual_human_height=actual_human_height,
         src_human="smplh",
         tgt_robot=args.robot,
+        use_fitted_shape=(fitted_shape_path is not None),
     )
 
     robot_motion_viewer = RobotMotionViewer(robot_type=args.robot,
