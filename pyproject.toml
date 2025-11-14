@@ -36,6 +36,9 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/YanjieZe/GMR"
 
+[[tool.uv.index]]
+url = "https://pypi.org/simple"
+
 [tool.setuptools]
 packages = {find = {}}
 
