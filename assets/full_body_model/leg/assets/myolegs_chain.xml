@@ -103,7 +103,7 @@
         <site name="PS_at_brim_r_site_psoas_r_side" pos="-0.0209166 -0.0856869 0.0790765"/>
         <site name="PS_at_brim_l_site_psoas_l_side" pos="-0.0209166 -0.0856869 -0.0790765"/>
         <site name="IL_at_brim_r_site_iliacus_r_side" pos="-0.02526034 -0.0256276 0.0928915"/>
-        <site name="IL_at_brim_l_site_iliacus_l_side" pos="-0.02526034 -0.0256276 -0.0928915"/>
+        <site name="IL_at_brim_l_site_iliacus_l_side" pos="-0.00526034 -0.0756276 -0.0828915"/>
         <body name="femur_r" pos="-0.056276 -0.07849 0.07726">
             <site name="hip_r" class="myo_leg_marker"/>
             <inertial pos="0 -0.195 -0.0005" quat="0.708013 -0.7062 0 0" mass="8.4" diaginertia="0.1694 0.1694 0.0245269" />
@@ -178,7 +178,7 @@
                 <inertial pos="-0.005 -0.175 0.0025" quat="0.70204 -0.711847 0.0203385 0" mass="3.8" diaginertia="0.0771589 0.0771589 0.00690387" />
                 <joint axis="0.992246 0.123982 -0.00878916" name="knee_angle_r_translation2" pos="0 0 0" range="7.69254e-11 0.006792" type="slide"/>
                 <joint axis="-0.124293 0.989762 -0.0701648" name="knee_angle_r_translation1" pos="0 0 0" range="9.53733e-08 0.00159883" type="slide"/>
-                <joint axis="-3.98373e-10 -0.0707131 -0.997497" name="knee_angle_r" pos="0 0 0" range="0 2.0944"/>
+                <joint axis="-3.98373e-10 -0.0707131 -0.997497" name="knee_angle_r" pos="0 0 0" range="0 2.5944"/>
                 <joint axis="0.992246 0.123982 -0.00878916" name="knee_angle_r_rotation2" pos="0 0 0" range="-0.00167821 0.0335354"/>
                 <joint axis="-0.124293 0.989762 -0.0701648" name="knee_angle_r_rotation3" pos="0 0 0" range="1.08939e-08 0.262788"/>
                 <geom name="r_tibia1_col" size=".056" class="coll" fromto="0 0 0 -0.01 -0.14 .0025" mass="3.8"/> <!-- 14cms -->
@@ -392,7 +392,7 @@
                 <inertial pos="-0.005 -0.175 -0.0025" quat="0.712137 -0.701754 0.0200501 0" mass="3.8" diaginertia="0.0771589 0.0771589 0.00690387" />
                 <joint axis="0.992246 0.123982 0.00878916" name="knee_angle_l_translation2" pos="0 0 0" range="7.69254e-11 0.006792" type="slide"/>
                 <joint axis="-0.124293 0.989762 0.0701648" name="knee_angle_l_translation1" pos="0 0 0" range="9.53733e-08 0.00159883" type="slide"/>
-                <joint axis="3.98373e-10 0.0707131 -0.997497" name="knee_angle_l" pos="0 0 0" range="0 2.0944"/>
+                <joint axis="3.98373e-10 0.0707131 -0.997497" name="knee_angle_l" pos="0 0 0" range="0 2.5944"/>
                 <joint axis="-0.992246 -0.123982 -0.00878916" name="knee_angle_l_rotation2" pos="0 0 0" range="-0.00167821 0.0335354"/>
                 <joint axis="-0.124293 0.989762 0.0701648" name="knee_angle_l_rotation3" pos="0 0 0" range="-0.262788 -1.08939e-08"/>
                 <geom name="l_tibia1_col" size=".056" class="coll" fromto="0 0 0 -0.01 -0.14 -.0025" mass="3.8"/> <!-- 14cms -->

@@ -27,6 +27,8 @@ from rich.console import Console
 
 console = Console()
 
+model = mj.MjModel.from_xml_path("/media/data/cheryl/gmr_plus/assets/full_body_model/body/myofullbody.xml")
+
 
 def compute_retargeting_metrics(qpos_list, model):
     """Compute metrics from retargeted motion."""
@@ -128,14 +130,7 @@ def main():
         return
 
     # Load fitted shape
-    shape_fitted, scale_fitted, offset_z_fitted, height_scale_fitted, offsets_fitted = load_fitted_shape(str(FITTED_SHAPE_PATH))
-
-    # Load metrics from metadata file
-    import json
-    metadata_path = str(FITTED_SHAPE_PATH).replace('.pkl', '_metadata.json')
-    with open(metadata_path, 'r') as f:
-        metadata = json.load(f)
-        metrics_fitted = metadata['metrics']
+    shape_fitted, scale_fitted, metrics_fitted = load_fitted_shape(str(FITTED_SHAPE_PATH))
 
     console.print("[bold cyan]Step 1: Loading SMPL-H data with DEFAULT scaling[/bold cyan]")
     smplh_data_default, body_model_default, smplh_output_default, height_default = load_smplh_file(
@@ -185,7 +180,7 @@ def main():
 
     qpos_list_default = []
     for i, frame_data in enumerate(smplh_frames_default):
-        qpos, _ = retarget_default.retarget(frame_data, offset_to_ground=True)
+        qpos = retarget_default.retarget(frame_data, offset_to_ground=True)
         qpos_list_default.append(qpos)
         if i % 30 == 0:
             console.print(f"  Processing frame {i}/{len(smplh_frames_default)}")
@@ -198,13 +193,12 @@ def main():
         src_human="smplh",
         tgt_robot=args.robot,
         use_fitted_shape=True,
-        fitted_shape_path=str(FITTED_SHAPE_PATH),
         verbose=False,
     )
 
     qpos_list_fitted = []
     for i, frame_data in enumerate(smplh_frames_fitted):
-        qpos, _ = retarget_fitted.retarget(frame_data, offset_to_ground=True)
+        qpos = retarget_fitted.retarget(frame_data, offset_to_ground=True)
         qpos_list_fitted.append(qpos)
         if i % 30 == 0:
             console.print(f"  Processing frame {i}/{len(smplh_frames_fitted)}")
