@@ -6,6 +6,8 @@ import json
 from scipy.spatial.transform import Rotation as R
 from .params import ROBOT_XML_DICT, IK_CONFIG_DICT
 from rich import print
+from mink.tasks.equality_constraint_task import EqualityConstraintTask
+
 
 class GeneralMotionRetargeting:
     """General Motion Retargeting (GMR).
@@ -103,12 +105,28 @@ class GeneralMotionRetargeting:
         self.setup_retarget_configuration()
         
         self.ground_offset = 0.0
+    
+    def _add_equality_tasks(self, cur_task):
+        model = self.configuration.model
+
+        for eq_id in range(model.neq):
+            if model.eq_type[eq_id] == mj.mjtEq.mjEQ_JOINT:
+                task = EqualityConstraintTask(model, eq_id)
+                task.weight = 5.0
+                cur_task.append(task)
 
     def setup_retarget_configuration(self):
         self.configuration = mink.Configuration(self.model)
     
         self.tasks1 = []
         self.tasks2 = []
+
+        if self.use_ik_match_table1:
+            self._add_equality_tasks(self.tasks1)
+
+        if self.use_ik_match_table2:
+            self._add_equality_tasks(self.tasks2)
+        
         
         for frame_name, entry in self.ik_match_table1.items():
             body_name, pos_weight, rot_weight, pos_offset, rot_offset = entry
