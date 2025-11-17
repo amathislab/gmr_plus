@@ -242,9 +242,38 @@ class GeneralMotionRetargeting:
                 
                 next_error = self.error2()
                 num_iter += 1
-                
+        
+        final_curr_pos = []
+        final_tgt_pos  = []
+        self.frame_tasks_2 = [t for t in self.tasks2 if isinstance(t, mink.FrameTask)]
+
+        for task in self.frame_tasks_2:
+
+            # === Get current pose after IK converged ===
             
-        return self.configuration.data.qpos.copy()
+            T_curr = self.configuration.get_transform_frame_to_world(
+                task.frame_name,
+                task.frame_type,     # always "body" in your setup
+            )
+
+            # === Get TARGET pose stored inside the task ===
+            T_tgt = task.transform_target_to_world
+
+            # === Extract xyz translations ===
+            # mink.SE3 uses `.translation()` just like jaxlie
+            p_curr = np.array(T_curr.translation())
+            p_tgt  = np.array(T_tgt.translation())
+
+            final_curr_pos.append(p_curr)
+            final_tgt_pos.append(p_tgt)
+        
+        final_curr_pos = np.stack(final_curr_pos)   # (N, 3)
+        final_tgt_pos  = np.stack(final_tgt_pos)    # (N, 3)
+
+        body_diff = final_curr_pos - final_tgt_pos
+        body_diff_norm = np.linalg.norm(body_diff, axis=1)
+
+        return self.configuration.data.qpos.copy(), body_diff_norm
 
 
     def error1(self):
