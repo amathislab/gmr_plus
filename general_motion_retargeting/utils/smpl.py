@@ -7,6 +7,7 @@ from scipy.interpolate import interp1d
 from smplx import SMPLH as _SMPLH
 
 import general_motion_retargeting.utils.lafan_vendor.utils as utils
+from general_motion_retargeting.utils.shape_fitting import load_fitted_shape
 
 
 # SMPLH joint names (52 joints: 22 body + 30 hands)
@@ -21,6 +22,8 @@ SMPLH_BONE_ORDER_NAMES = [
     'R_Pinky1', 'R_Pinky2', 'R_Pinky3', 'R_Ring1', 'R_Ring2', 'R_Ring3',
     'R_Thumb1', 'R_Thumb2', 'R_Thumb3'
 ]
+
+SMPLH_JOINT_NAMES = SMPLH_BONE_ORDER_NAMES
 
 
 class SMPLH_Parser(_SMPLH):
@@ -109,7 +112,7 @@ def load_smplx_file(smplx_file, smplx_body_model_path):
     return smplx_data, body_model, smplx_output, human_height
 
 
-def load_smplh_file(smplh_file, smplh_body_model_path):
+def load_smplh_file(smplh_file, smplh_body_model_path, fitted_shape_path=None):
     """Load SMPL-H data and create body model.
 
     SMPL-H has 52 joints (22 body + 30 hands, no face) and 10 shape parameters.
@@ -118,6 +121,12 @@ def load_smplh_file(smplh_file, smplh_body_model_path):
     Handles two formats:
     1. AMASS format: 'poses' array (N, 156) = root(3) + body(63) + hands(90)
     2. Standard format: separate 'root_orient', 'pose_body', hand pose arrays
+
+    Args:
+        smplh_file: Path to SMPL-H motion data file (.npz)
+        smplh_body_model_path: Path to SMPL-H body models directory
+        fitted_shape_path: Optional path to fitted shape parameters (.pkl)
+                          If provided, uses optimized shape instead of data betas
     """
     smplh_data = np.load(smplh_file, allow_pickle=True)
 
@@ -157,10 +166,16 @@ def load_smplh_file(smplh_file, smplh_body_model_path):
         torch.tensor(smplh_data["right_hand_pose"]).float(),
     ], dim=1)
 
-    # Get betas - handle both single and batch format
-    betas = torch.tensor(smplh_data["betas"]).float()
-    if betas.ndim == 1:
-        betas = betas.view(1, -1)
+    # Get betas - use fitted shape if provided, otherwise use data betas
+    if fitted_shape_path is not None:
+        fitted_shape, fitted_scale, fitted_metrics = load_fitted_shape(fitted_shape_path)
+        betas = torch.from_numpy(fitted_shape).float()  # (1, 16)
+        print(f"[load_smplh_file] Using fitted shape from {fitted_shape_path}")
+        print(f"  Fitted scale: {fitted_scale[0]:.4f}, Beta[0]: {betas[0, 0]:.4f}")
+    else:
+        betas = torch.tensor(smplh_data["betas"]).float()
+        if betas.ndim == 1:
+            betas = betas.view(1, -1)
 
     # Get translation
     trans = torch.tensor(smplh_data["trans"]).float()
@@ -175,6 +190,20 @@ def load_smplh_file(smplh_file, smplh_body_model_path):
         th_betas=betas,
         th_trans=trans,
     )
+
+    # Apply fitted scale directly to joints
+    # This scales the joints to match robot proportions
+    if fitted_shape_path is not None:
+        fitted_scale_val = float(fitted_scale.flat[0]) if isinstance(fitted_scale, np.ndarray) else float(fitted_scale)
+
+        # Apply scale: (joints - pelvis) * scale + pelvis
+        # This preserves root position while scaling all joints relative to pelvis
+        pelvis_pos = joints[:, 0:1, :]  # (N, 1, 3)
+        joints = (joints - pelvis_pos) * fitted_scale_val + pelvis_pos
+        print(f"  Applied fitted scale {fitted_scale_val:.4f} directly to SMPL joints")
+
+        # Store fitted_scale in smplh_data so GMR knows to skip additional scaling
+        smplh_data["fitted_scale"] = fitted_scale_val
 
     # Create output dict similar to smplx output with all necessary attributes
     class SMPLHOutput:
@@ -200,11 +229,21 @@ def load_smplh_file(smplh_file, smplh_body_model_path):
         betas=betas,
     )
 
-    # Height calculation same as SMPL-X (uses betas[0])
-    if len(smplh_data["betas"].shape) == 1:
-        human_height = 1.66 + 0.1 * smplh_data["betas"][0]
+    # Height calculation
+    if fitted_shape_path is not None:
+        # With fitted shape, joints are already correctly scaled
+        # Compute actual height from scaled joints for reference
+        head_idx = 15
+        left_foot_idx = 10
+        right_foot_idx = 11
+        human_height = float(joints[0, head_idx, 2] - min(joints[0, left_foot_idx, 2], joints[0, right_foot_idx, 2]))
+        print(f"  Actual SMPL height after scaling: {human_height:.3f} m")
     else:
-        human_height = 1.66 + 0.1 * smplh_data["betas"][0, 0]
+        # Use beta[0] heuristic for height-based scaling
+        if len(smplh_data["betas"].shape) == 1:
+            human_height = 1.66 + 0.1 * smplh_data["betas"][0]
+        else:
+            human_height = 1.66 + 0.1 * smplh_data["betas"][0, 0]
 
     return smplh_data, body_model, smplh_output, human_height
 

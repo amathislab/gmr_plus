@@ -27,8 +27,6 @@ from rich.console import Console
 
 console = Console()
 
-model = mj.MjModel.from_xml_path("/media/data/cheryl/gmr_plus/assets/full_body_model/body/myofullbody.xml")
-
 
 def compute_retargeting_metrics(qpos_list, model):
     """Compute metrics from retargeted motion."""

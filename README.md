@@ -367,6 +367,93 @@ After launching the MuJoCo visualization window and clicking on it, you can use 
 * `]`: play the next motion
 * `space`: toggle play/pause
 
+### Data-Driven Shape Fitting
+
+This fork of GMR includes a shape fitting feature that optimizes SMPL-H body parameters to better match specific robot proportions.
+
+**How it works:** The shape fitting algorithm:
+1. Sets the robot to T-pose and extracts target joint positions
+2. Optimizes all 16 SMPL-H beta parameters (shape) + a global scale factor
+3. Minimizes L2 distance between SMPL-H joints and robot targets
+
+**Install shape fitting dependencies:**
+```bash
+uv sync
+```
+
+**Fit shape parameters for a robot:**
+```bash
+uv run scripts/fit_smpl_shape.py --robot unitree_g1 --iterations 1000
+```
+
+**Compare with height-based scaling:**
+```bash
+uv run scripts/fit_smpl_shape.py --robot unitree_g1 --iterations 1000 --compare
+```
+
+This saves the optimized shape to `assets/fitted_shapes/{robot}_shape.pkl`.
+
+**Detailed quantitative comparison:**
+
+For a comprehensive analysis showing per-joint differences, temporal evolution, and statistical distributions:
+
+```bash
+# Compare on specific motion (90 frames)
+MUJOCO_GL=egl uv run python scripts/compare_shape_fitting.py \
+    --smplh_file <path_to_amass.npz> \
+    --robot unitree_g1 \
+    --num_frames 90
+
+# With visualization videos
+MUJOCO_GL=egl uv run python scripts/compare_shape_fitting.py \
+    --smplh_file /media/data/share/AMASS/ACCAD/Female1General_c3d/A10 - lie to crouch_poses \
+    --robot myofullbody \
+    --num_frames 90 \
+    --visualize \
+    --output_dir videos/comparison
+```
+
+This provides detailed metrics including:
+- Per-joint RMSE analysis (top 10 joints with largest differences)
+- Statistical distribution of joint angle differences (percentiles)
+- Temporal evolution (consistency over time)
+- Base trajectory analysis (travel distance, average height)
+
+**Using fitted shape for retargeting:**
+
+Once fitted, the shape is automatically used for SMPL-H retargeting if it exists in `assets/fitted_shapes/`:
+
+```bash
+# SMPL-H to robot with auto-detected fitted shape
+MUJOCO_GL=egl python scripts/smplh_to_robot.py \
+    --smplh_file <path_to_amass.npz> \
+    --robot unitree_g1 \
+    --save_path output.pkl \
+    --record_video \
+    --video_path output.mp4
+
+# Explicitly specify fitted shape path
+MUJOCO_GL=egl python scripts/smplh_to_robot.py \
+    --smplh_file <path_to_amass.npz> \
+    --robot unitree_g1 \
+    --fitted_shape assets/fitted_shapes/unitree_g1_shape.pkl \
+    --save_path output.pkl
+
+# Disable fitted shape (use height-based scaling)
+MUJOCO_GL=egl python scripts/smplh_to_robot.py \
+    --smplh_file <path_to_amass.npz> \
+    --robot unitree_g1 \
+    --fitted_shape "" \
+    --save_path output.pkl
+```
+
+The fitted shape approach:
+- Optimizes all 16 beta parameters (vs. only beta[0] heuristic)
+- Applies uniform scale directly to SMPL joints (bypasses per-body-part heuristics)
+- Achieves ~70% better T-pose accuracy while maintaining similar dynamic motion quality
+- Produces joint angle differences typically <0.5° (median ~0.2°)
+
+
 ## Speed Benchmark
 
 | CPU | Retargeting Speed |

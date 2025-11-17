@@ -21,6 +21,7 @@ class GeneralMotionRetargeting:
         damping: float=5e-1, # change from 1e-1 to 1e-2.
         verbose: bool=True,
         use_velocity_limit: bool=False,
+        use_fitted_shape: bool=False,  # Whether using fitted shape
     ) -> None:
 
         # load the robot model
@@ -60,16 +61,25 @@ class GeneralMotionRetargeting:
             ik_config = json.load(f)
         if verbose:
             print("Use IK config: ", IK_CONFIG_DICT[src_human][tgt_robot])
-        
-        # compute the scale ratio based on given human height and the assumption in the IK config
-        if actual_human_height is not None:
-            ratio = actual_human_height / ik_config["human_height_assumption"]
-        else:
-            ratio = 1.0
-            
+        self.use_fitted_shape = use_fitted_shape
+
         # adjust the human scale table
-        for key in ik_config["human_scale_table"].keys():
-            ik_config["human_scale_table"][key] = ik_config["human_scale_table"][key] * ratio
+        if use_fitted_shape:
+            # When using fitted shape, the fitted_scale is already applied directly to SMPL joints
+            # in load_smplh_file(). We do not apply any additional scaling here.
+            for key in ik_config["human_scale_table"].keys():
+                ik_config["human_scale_table"][key] = 1.0
+            if verbose:
+                print(f"[GMR] Using fitted shape: fitted_scale already applied to SMPL joints, skipping manual scaling (scale_table=1.0)")
+        else:
+            # Without fitted shape, use height-based scaling
+            if actual_human_height is not None:
+                ratio = actual_human_height / ik_config["human_height_assumption"]
+            else:
+                ratio = 1.0
+
+            for key in ik_config["human_scale_table"].keys():
+                ik_config["human_scale_table"][key] = ik_config["human_scale_table"][key] * ratio
     
 
         # used for retargeting
