@@ -343,9 +343,17 @@ class GeneralMotionRetargeting:
     def offset_human_data_to_ground(self, human_data):
         """find the lowest point of the human data and offset the human data to the ground"""
         offset_human_data = {}
-        ground_offset = 0.1
+        ground_offset = 0
         lowest_pos = np.inf
 
+        # instead of using the food, we use the lowest point as the offset point
+        for body_name, (pos, quat) in human_data.items():
+            # pos is expected to be (x, y, z)
+            if pos[2] < lowest_pos:
+                lowest_pos = pos[2]
+                lowest_body_name = body_name
+
+        '''
         for body_name in human_data.keys():
             # only consider the foot/Foot
             if "Foot" not in body_name and "foot" not in body_name:
@@ -354,10 +362,12 @@ class GeneralMotionRetargeting:
             if pos[2] < lowest_pos:
                 lowest_pos = pos[2]
                 lowest_body_name = body_name
+        '''
         for body_name in human_data.keys():
             pos, quat = human_data[body_name]
-            offset_human_data[body_name] = [pos, quat]
+            offset_human_data[body_name] = [pos.copy(), quat.copy()]
             offset_human_data[body_name][0] = pos - np.array([0, 0, lowest_pos]) + np.array([0, 0, ground_offset])
+        
         return offset_human_data
 
     def set_ground_offset(self, ground_offset):
