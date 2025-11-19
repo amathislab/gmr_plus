@@ -115,6 +115,23 @@ if __name__ == "__main__":
         src_human="smplh",
         tgt_robot=args.robot,
     )
+    fixed_count = 0
+    
+    model = retarget.configuration.model
+
+    qpos = retarget.configuration.data.qpos.copy()
+    for i in range(model.njnt):
+        if model.jnt_limited[i]:
+            qpos_adr = model.jnt_qposadr[i]
+            jnt_min, jnt_max = model.jnt_range[i]
+            if not (jnt_min <= qpos[qpos_adr] <= jnt_max):
+                mid_val = (jnt_min + jnt_max) / 2
+                qpos[qpos_adr] = mid_val
+                fixed_count += 1
+    if fixed_count > 0:
+        print(f"✓ Initialized {fixed_count} joints to range midpoints")
+        # Update configuration with new qpos
+        retarget.configuration.update(q=qpos)
 
 
     robot_motion_viewer = RobotMotionViewer(robot_type=args.robot,
