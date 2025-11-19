@@ -13,7 +13,8 @@ authors = [
     {name = "Yanjie Ze", email = "lastyanjieze@gmail.com"}
 ]
 maintainers = [
-    {name = "Chengkun Li", email = "chengkun.li@epfl.ch"}
+    {name = "Chengkun Li", email = "chengkun.li@epfl.ch"},
+    {name = "Cheryl Wang", email = "huiyi.wang@mail.mcgill.ca"}
 ]
 dependencies = [
     "imageio[ffmpeg]>=2.37.2",
@@ -35,6 +36,9 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/YanjieZe/GMR"
+
+[[tool.uv.index]]
+url = "https://pypi.org/simple"
 
 [tool.setuptools]
 packages = {find = {}}
