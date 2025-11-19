@@ -128,7 +128,14 @@ def main():
         return
 
     # Load fitted shape
-    shape_fitted, scale_fitted, metrics_fitted = load_fitted_shape(str(FITTED_SHAPE_PATH))
+    shape_fitted, scale_fitted, offset_z_fitted, height_scale_fitted, offsets_fitted = load_fitted_shape(str(FITTED_SHAPE_PATH))
+
+    # Load metrics from metadata file
+    import json
+    metadata_path = str(FITTED_SHAPE_PATH).replace('.pkl', '_metadata.json')
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)
+        metrics_fitted = metadata['metrics']
 
     console.print("[bold cyan]Step 1: Loading SMPL-H data with DEFAULT scaling[/bold cyan]")
     smplh_data_default, body_model_default, smplh_output_default, height_default = load_smplh_file(
@@ -191,6 +198,7 @@ def main():
         src_human="smplh",
         tgt_robot=args.robot,
         use_fitted_shape=True,
+        fitted_shape_path=str(FITTED_SHAPE_PATH),
         verbose=False,
     )
 

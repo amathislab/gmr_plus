@@ -30,6 +30,7 @@ from general_motion_retargeting.utils.shape_fitting import (
     load_fitted_shape,
     compare_scaling_methods,
     check_torch_availability,
+    compute_alignment_offsets,
 )
 from rich import print
 from rich.table import Table
@@ -114,10 +115,11 @@ def main():
     console.print(f"  IK Config: {ik_config_path}")
 
     console.print(f"\n[bold cyan]Step 2: Extracting robot T-pose targets[/bold cyan]")
-    target_positions, smpl_joint_names = get_robot_tpose_targets(
+    target_positions, smpl_joint_names, target_rotations, human_joint_names = get_robot_tpose_targets(
         robot_xml_path,
         args.robot,
         ik_config,
+        include_rotations=True,
     )
 
     console.print(f"  Found {len(target_positions)} target joints")
@@ -140,19 +142,44 @@ def main():
     console.print(f"  Device: {args.device}\n")
 
     # Fit shape
-    shape, scale, metrics = fit_smpl_shape_to_robot(
+    (shape, scale, smpl2robot_pos, smpl2robot_rot_mat,
+     offset_z, height_scale, metrics) = fit_smpl_shape_to_robot(
         smpl_parser,
         target_positions,
         smpl_joint_indices,
+        target_rotations=target_rotations,  # Pass rotations
         iterations=args.iterations,
         lr=args.lr,
         device=args.device,
         verbose=True,
     )
 
+    # Compute LOCAL frame offsets for GMR's offset_human_data() function
+    # This converts global frame offsets to robot-local frame offsets compatible with JSON config format
+    console.print(f"\n[bold cyan]Step 4.5: Computing LOCAL frame offsets for IK compatibility[/bold cyan]")
+    local_offsets = compute_alignment_offsets(
+        smpl_parser,
+        shape,
+        scale,
+        smpl_joint_indices,
+        human_joint_names,
+        target_positions,
+        target_rotations if target_rotations is not None else np.eye(3)[None].repeat(len(target_positions), axis=0),
+    )
+    console.print(f"  ✓ Computed LOCAL frame offsets for {len(local_offsets['pos_offsets'])} joints")
+
     # Save results
     console.print(f"\n[bold cyan]Step 5: Saving fitted shape[/bold cyan]")
-    save_fitted_shape(shape, scale, metrics, str(save_path))
+    save_fitted_shape(
+        shape, scale,
+        smpl2robot_pos, smpl2robot_rot_mat,
+        offset_z, height_scale,
+        metrics,
+        str(save_path),
+        human_joint_names=human_joint_names,
+        musclemimic_format=True,
+        local_offsets=local_offsets,  # Pass LOCAL offsets for GMR
+    )
 
     # Print results
     console.print(f"\n[bold green]✓ Shape fitting complete![/bold green]")
@@ -163,6 +190,9 @@ def main():
     console.print(f"  Converged: {'Yes' if metrics['converged'] else 'No'}")
     console.print(f"  Global scale: {scale[0].item():.4f}")
     console.print(f"  Beta[0] (height): {shape[0, 0].item():.4f}")
+    console.print(f"  offset_z: {offset_z:.4f} m")
+    console.print(f"  height_scale: {height_scale:.4f}")
+    console.print(f"  Learned offsets stored for {len(human_joint_names)} joints")
 
     # Comparison mode
     if args.compare:

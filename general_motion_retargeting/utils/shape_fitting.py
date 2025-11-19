@@ -105,7 +105,8 @@ def get_robot_tpose_targets(
     robot_xml_path: str,
     robot_type: str,
     ik_config: Dict,
-) -> Tuple[np.ndarray, List[str]]:
+    include_rotations: bool = False,
+) -> Tuple[np.ndarray, List[str], Optional[np.ndarray], Optional[List[str]]]:
     """
     Extract target joint positions from robot in T-pose.
 
@@ -125,30 +126,34 @@ def get_robot_tpose_targets(
     # Set robot to T-pose
     set_robot_to_tpose(model, data, robot_type)
 
-    # Extract positions for tracked joints from ik_match_table1
     target_positions = []
+    target_rotations = []
     smpl_joint_names = []
+    human_joint_names = []
 
     for robot_link, smpl_joint_info in ik_config["ik_match_table1"].items():
         ik_joint_name = smpl_joint_info[0]  # GMR IK config name (lowercase)
 
-        # Convert to SMPL-H bone name (capitalized)
         smpl_joint_name = GMR_TO_SMPLH_JOINT_MAP.get(ik_joint_name)
         if smpl_joint_name is None:
             print(f"Warning: No mapping for IK joint {ik_joint_name}")
             continue
 
-        # Get robot link position
         try:
             link_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, robot_link)
             pos = data.xpos[link_id].copy()
             target_positions.append(pos)
             smpl_joint_names.append(smpl_joint_name)
+            human_joint_names.append(ik_joint_name)
+            if include_rotations:
+                rot_flat = data.xmat[link_id].copy()
+                target_rotations.append(rot_flat.reshape(3, 3))
         except Exception as e:
             print(f"Warning: Could not find body {robot_link}: {e}")
             continue
 
-    return np.array(target_positions), smpl_joint_names
+    rotations = np.array(target_rotations) if include_rotations and target_rotations else None
+    return np.array(target_positions), smpl_joint_names, rotations, human_joint_names
 
 
 def get_smpl_tpose_indices(
@@ -181,11 +186,12 @@ def fit_smpl_shape_to_robot(
     smpl_parser,
     target_positions: np.ndarray,
     smpl_joint_indices: np.ndarray,
+    target_rotations: Optional[np.ndarray] = None,
     iterations: int = 1000,
     lr: float = 1e-3,
     device: str = "cpu",
     verbose: bool = True,
-) -> Tuple[torch.Tensor, torch.Tensor, Dict]:
+) -> Tuple[torch.Tensor, torch.Tensor, np.ndarray, np.ndarray, float, float, Dict]:
     """
     Optimize SMPL-H shape parameters to match robot target positions.
 
@@ -196,6 +202,7 @@ def fit_smpl_shape_to_robot(
         smpl_parser: SMPL-H parser instance
         target_positions: (N, 3) target positions from robot in T-pose
         smpl_joint_indices: (N,) indices of SMPL joints to match
+        target_rotations: (N, 3, 3) optional target rotation matrices from robot
         iterations: Number of optimization iterations
         lr: Learning rate for Adam optimizer
         device: PyTorch device ('cpu' or 'cuda')
@@ -204,6 +211,10 @@ def fit_smpl_shape_to_robot(
     Returns:
         optimized_shape: (1, 16) optimized beta parameters
         optimized_scale: (1,) global scale factor
+        smpl2robot_pos: (N, 3) position offsets
+        smpl2robot_rot_mat: (N, 3, 3) rotation offset matrices
+        offset_z: float, vertical offset correction
+        height_scale: float, height scaling factor
         metrics: Dictionary of optimization metrics
     """
     check_torch_availability()
@@ -227,6 +238,10 @@ def fit_smpl_shape_to_robot(
 
     losses = []
 
+    # Track heights for computing offset_z and height_scale
+    init_feet_z = None
+    init_head_z = None
+
     if verbose:
         try:
             from tqdm import tqdm
@@ -238,18 +253,28 @@ def fit_smpl_shape_to_robot(
         pbar = range(iterations)
 
     for iteration in pbar:
-        # Forward pass through SMPL
+        # Use get_joints_verts for optimization (guarantees gradients flow)
         vertices, joints = smpl_parser.get_joints_verts(
             pose=pose_aa_tpose,
             th_betas=shape,
             th_trans=trans
         )
 
-        # Extract relevant joints and convert to numpy if needed
+        # Convert to tensor if needed
         if isinstance(joints, np.ndarray):
-            predicted_positions = torch.from_numpy(joints[0, smpl_joint_indices]).float().to(device)
-        else:
-            predicted_positions = joints[0, smpl_joint_indices]
+            joints = torch.from_numpy(joints).float().to(device)
+
+        # Track heights on first iteration
+        if init_feet_z is None:
+            # Indices: 10=L_Foot, 11=R_Foot, 15=Head in SMPL-H
+            init_feet_z = min(
+                joints[0, 10, 2].detach().cpu().item(),
+                joints[0, 11, 2].detach().cpu().item()
+            )
+            init_head_z = joints[0, 15, 2].detach().cpu().item()
+
+        # Extract relevant joints
+        predicted_positions = joints[0, smpl_joint_indices]
 
         # Center at pelvis (index 0) and apply scale
         predicted_positions = (predicted_positions - predicted_positions[0:1]) * scale
@@ -269,48 +294,326 @@ def fit_smpl_shape_to_robot(
             if iteration % 100 == 0:
                 pbar.set_description(f"Fitting SMPL shape - Loss: {loss.item():.6f}")
 
+    # After optimization, compute final parameters
+    with torch.no_grad():
+        # Use get_joints_verts for consistency with optimization loop
+        vertices, joints = smpl_parser.get_joints_verts(
+            pose=pose_aa_tpose,
+            th_betas=shape,
+            th_trans=trans
+        )
+
+        if isinstance(joints, np.ndarray):
+            joints = torch.from_numpy(joints).float()
+
+        # Final heights (using same method as initial heights)
+        final_feet_z = min(joints[0, 10, 2].item(), joints[0, 11, 2].item())
+        final_head_z = joints[0, 15, 2].item()
+
+        # Now get transformations for rotation offsets (if available)
+        # Always use joints for positions (more reliable); rotations from transforms if available
+        if hasattr(smpl_parser, 'get_joint_transformations'):
+            transforms = smpl_parser.get_joint_transformations(
+                pose=pose_aa_tpose,
+                th_betas=shape,
+                th_trans=trans
+            )
+            global_rot = transforms[..., :3, :3]
+        else:
+            transforms = None
+            global_rot = None  # No rotations available
+
+        global_pos = joints  # positions from forward kinematics
+
+        # Apply scale to positions
+        root_pos = global_pos[:, 0:1, :]
+        global_pos = (global_pos - root_pos) * scale + root_pos
+
+        # Compute position offsets
+        # Center by pelvis to match the optimization objective frame
+        smpl_pos = global_pos[0, smpl_joint_indices].cpu().numpy()
+        target_pos_np = target_positions.cpu().numpy()
+        smpl2robot_pos = smpl_pos - target_pos_np
+        root_delta = smpl2robot_pos[0].copy()  # pelvis assumed to be first
+        smpl2robot_pos = smpl2robot_pos - root_delta
+
+        # Compute rotation offsets (R_offset = R_smpl^T @ R_robot)
+        if target_rotations is not None and global_rot is not None:
+            smpl_rot = global_rot[0, smpl_joint_indices].cpu().numpy()  # (N, 3, 3)
+            # R_offset = R_smpl^T @ R_robot
+            smpl2robot_rot_mat = np.einsum('nij,njk->nik',
+                                           smpl_rot.transpose(0, 2, 1),
+                                           target_rotations)
+        else:
+            # No rotations available, use identity
+            smpl2robot_rot_mat = np.eye(3)[None].repeat(len(smpl_joint_indices), axis=0)
+
+        # Compute offset_z and height_scale
+        offset_z = float(init_feet_z - final_feet_z) if init_feet_z is not None else 0.0
+        height_scale = float((final_head_z - final_feet_z) / (init_head_z - init_feet_z)) if init_head_z is not None else 1.0
+
     metrics = {
         "final_loss": losses[-1],
         "initial_loss": losses[0],
         "losses": losses,
         "iterations": iterations,
         "converged": losses[-1] < 0.01,  # Threshold in meters
+        "offset_z": offset_z,
+        "height_scale": height_scale,
     }
 
-    return shape.detach(), scale.detach(), metrics
+    return shape.detach(), scale.detach(), smpl2robot_pos, smpl2robot_rot_mat, offset_z, height_scale, metrics
+
+
+def compute_alignment_offsets(
+    smpl_parser,
+    shape: torch.Tensor,
+    scale: torch.Tensor,
+    smpl_joint_indices: np.ndarray,
+    human_joint_names: List[str],
+    target_positions: np.ndarray,
+    target_rotations: np.ndarray,
+) -> Dict:
+    """Compute SMPL→robot offsets using full joint transforms.
+
+    Rot offset: R_smpl^T @ R_robot;
+    Pos offset (robot local): R_robot^T (p_robot - p_smpl).
+    """
+    check_torch_availability()
+
+    device = shape.device
+    pose_aa_tpose = np.zeros((1, 156)).reshape(-1, 52, 3)
+    pose_aa_tpose[:, 0] = sRot.from_euler("xyz", [np.pi/2, 0.0, np.pi/2], degrees=False).as_rotvec()
+    pose_aa_tpose = torch.from_numpy(pose_aa_tpose.reshape(-1, 156)).float().to(device)
+    trans = torch.zeros([1, 3]).to(device)
+
+    # Positions from joints (more trustworthy), rotations from transformations if available
+    with torch.no_grad():
+        vertices, joints = smpl_parser.get_joints_verts(
+            pose=pose_aa_tpose,
+            th_betas=shape,
+            th_trans=trans
+        )
+        if hasattr(smpl_parser, 'get_joint_transformations'):
+            transforms = smpl_parser.get_joint_transformations(
+                pose_aa_tpose,
+                th_betas=shape,
+                th_trans=trans,
+            )
+            global_rot = transforms[..., :3, :3]
+        else:
+            global_rot = None
+
+    global_pos = joints  # torch tensor
+    root_pos = global_pos[:, 0:1, :]
+    global_pos = (global_pos - root_pos) * float(scale.view(-1)[0]) + root_pos
+
+    global_pos = global_pos.detach().cpu().numpy()[0]
+    if global_rot is not None:
+        global_rot = global_rot.detach().cpu().numpy()[0]
+    else:
+        global_rot = np.repeat(np.eye(3)[None], global_pos.shape[0], axis=0)
+
+    offsets = {"pos_offsets": {}, "rot_offsets": {}, "human_joint_names": human_joint_names}
+
+    # Find pelvis index for centering (fallback to first if missing)
+    try:
+        root_idx = human_joint_names.index("pelvis")
+    except ValueError:
+        root_idx = 0
+    smpl_root = global_pos[smpl_joint_indices[root_idx]]
+    robot_root = target_positions[root_idx]
+
+    for idx, human_name in enumerate(human_joint_names):
+        smpl_idx = smpl_joint_indices[idx]
+        smpl_pos = global_pos[smpl_idx]
+        smpl_rot = global_rot[smpl_idx]
+        robot_pos = target_positions[idx]
+        robot_rot = target_rotations[idx] if target_rotations is not None else np.eye(3)
+
+        rot_offset = smpl_rot.T @ robot_rot
+        quat_xyzw = sRot.from_matrix(rot_offset).as_quat()
+        quat_wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
+
+        # Center in pelvis frame to match optimization convention
+        pos_offset_local = robot_rot.T @ ((robot_pos - robot_root) - (smpl_pos - smpl_root))
+
+        offsets["pos_offsets"][human_name] = pos_offset_local.tolist()
+        offsets["rot_offsets"][human_name] = quat_wxyz.tolist()
+
+    return offsets
 
 
 def save_fitted_shape(
     shape: torch.Tensor,
     scale: torch.Tensor,
+    smpl2robot_pos: np.ndarray,
+    smpl2robot_rot_mat: np.ndarray,
+    offset_z: float,
+    height_scale: float,
     metrics: Dict,
     save_path: str,
+    human_joint_names: Optional[List[str]] = None,
+    musclemimic_format: bool = True,
+    local_offsets: Optional[Dict] = None,
 ):
-    """Save fitted shape parameters to disk."""
+    """Save fitted shape parameters in MuscleMimic-compatible tuple format.
+
+    Args:
+        shape: (1, 16) optimized beta parameters
+        scale: (1,) global scale factor
+        smpl2robot_pos: (N, 3) position offsets
+        smpl2robot_rot_mat: (N, 3, 3) rotation offset matrices
+        offset_z: vertical offset correction
+        height_scale: height scaling factor
+        metrics: optimization metrics
+        save_path: path to save file
+        human_joint_names: list of human joint names (for mapping offsets)
+        musclemimic_format: if True, save as tuple; if False, save as dict
+    """
     check_torch_availability()
 
-    save_data = {
-        "shape": shape.cpu().numpy(),
-        "scale": scale.cpu().numpy(),
-        "metrics": metrics,
-    }
+    if musclemimic_format:
+        # MuscleMimic tuple format: (shape, scale, pos, rot, offset_z, height_scale)
+        save_data = (
+            shape.detach().cpu(),
+            scale.detach().cpu(),
+            smpl2robot_pos,
+            smpl2robot_rot_mat,
+            offset_z,
+            height_scale
+        )
+    else:
+        # Old GMR dict format (for backward compatibility)
+        save_data = {
+            "shape": shape.cpu().numpy(),
+            "scale": scale.cpu().numpy(),
+            "smpl2robot_pos": smpl2robot_pos,
+            "smpl2robot_rot_mat": smpl2robot_rot_mat,
+            "offset_z": offset_z,
+            "height_scale": height_scale,
+            "metrics": metrics,
+            "human_joint_names": human_joint_names,
+        }
 
     # Create directory if needed
     save_dir = pathlib.Path(save_path).parent
     save_dir.mkdir(parents=True, exist_ok=True)
 
     joblib.dump(save_data, save_path)
+
+    # Save metrics and joint names as JSON for analysis
+    import json
+    metadata_path = save_path.replace('.pkl', '_metadata.json')
+    metadata = {
+        "metrics": metrics,
+        "human_joint_names": human_joint_names,
+        "offset_z": offset_z,
+        "height_scale": height_scale,
+        "local_offsets": local_offsets if local_offsets else None,  # LOCAL frame offsets for GMR IK
+    }
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+
     print(f"✓ Saved fitted shape to {save_path}")
+    print(f"  Format: {'MuscleMimic tuple' if musclemimic_format else 'GMR dict'}")
     print(f"  Final loss: {metrics['final_loss']:.6f}")
     print(f"  Converged: {metrics['converged']}")
+    print(f"  offset_z: {offset_z:.4f} m")
+    print(f"  height_scale: {height_scale:.4f}")
+    print(f"  Metadata saved to {metadata_path}")
 
 
-def load_fitted_shape(load_path: str) -> Tuple[np.ndarray, float, Dict]:
-    """Load fitted shape parameters from disk."""
+def load_fitted_shape(load_path: str) -> Tuple[np.ndarray, np.ndarray, float, float, Optional[Dict]]:
+    """Load fitted shape parameters from disk.
+
+    Handles both MuscleMimic tuple format and old GMR dict format.
+
+    Returns:
+        shape: (1, 16) or (16,) shape parameters
+        scale: (1,) or float scale factor
+        offset_z: vertical offset
+        height_scale: height scaling factor
+        offsets: optional dict with per-joint offsets (GMR format only)
+    """
     check_torch_availability()
 
     data = joblib.load(load_path)
-    return data["shape"], data["scale"], data["metrics"]
+
+    if isinstance(data, tuple):
+        # MuscleMimic tuple format: (shape, scale, smpl2robot_pos, smpl2robot_rot_mat, offset_z, height_scale)
+        if len(data) == 6:
+            shape, scale, smpl2robot_pos, smpl2robot_rot_mat, offset_z, height_scale = data
+
+            # Convert torch tensors to numpy if needed
+            if hasattr(shape, 'numpy'):
+                shape = shape.numpy()
+            if hasattr(scale, 'numpy'):
+                scale = scale.numpy()
+
+            # Try to load LOCAL offsets from metadata (preferred for GMR IK)
+            import json
+            metadata_path = load_path.replace('.pkl', '_metadata.json')
+            human_joint_names = None
+            local_offsets = None
+            try:
+                if pathlib.Path(metadata_path).exists():
+                    with open(metadata_path, 'r') as f:
+                        metadata = json.load(f)
+                        human_joint_names = metadata.get("human_joint_names")
+                        local_offsets = metadata.get("local_offsets")  # LOCAL frame offsets
+            except Exception:
+                pass  # Metadata file not found or invalid
+
+            if human_joint_names is None:
+                raise ValueError(
+                    "Metadata file missing or does not contain human_joint_names. "
+                    "Cannot load fitted shape without joint name mapping."
+                )
+
+            # Use LOCAL offsets if available (computed by compute_alignment_offsets)
+            # These are compatible with GMR's offset_human_data() function
+            if local_offsets is not None and "pos_offsets" in local_offsets and "rot_offsets" in local_offsets:
+                offsets = local_offsets  # Already in correct format!
+            else:
+                # Fall back to converting global offsets (old format)
+                print("[load_fitted_shape] Warning: using global (uncentered) offsets fallback; metadata missing local_offsets.")
+                from scipy.spatial.transform import Rotation as R
+                offsets = {
+                    "pos_offsets": {
+                        name: smpl2robot_pos[i].tolist() if hasattr(smpl2robot_pos[i], 'tolist') else smpl2robot_pos[i]
+                        for i, name in enumerate(human_joint_names)
+                    },
+                    "rot_offsets": {
+                        name: R.from_matrix(smpl2robot_rot_mat[i]).as_quat(scalar_first=True).tolist()
+                        for i, name in enumerate(human_joint_names)
+                    },
+                    "human_joint_names": human_joint_names
+                }
+
+            return shape, scale, offset_z, height_scale, offsets
+        else:
+            raise ValueError(f"Unexpected tuple length: {len(data)}")
+
+    elif isinstance(data, dict):
+        # Old GMR dict format
+        shape = data["shape"]
+        scale = data["scale"]
+        offset_z = data.get("offset_z", 0.0)
+        height_scale = data.get("height_scale", 1.0)
+
+        # Try to get offsets in various formats
+        offsets = data.get("offsets")
+        if offsets is None and "smpl2robot_pos" in data:
+            offsets = {
+                "smpl2robot_pos": data["smpl2robot_pos"],
+                "smpl2robot_rot_mat": data.get("smpl2robot_rot_mat"),
+            }
+
+        return shape, scale, offset_z, height_scale, offsets
+
+    else:
+        raise ValueError(f"Unknown fitted shape format: {type(data)}")
 
 
 def compute_smpl_height(shape: np.ndarray, smplh_model_path: str) -> float:
@@ -341,6 +644,9 @@ def compute_smpl_height(shape: np.ndarray, smplh_model_path: str) -> float:
 
     # Forward pass
     betas_torch = torch.from_numpy(shape).float().view(1, -1)
+    # Truncate betas if necessary (AMASS may have 300 dims, but model expects 16)
+    if betas_torch.shape[1] > 16:
+        betas_torch = betas_torch[:, :16]
     _, joints = smpl_parser.get_joints_verts(pose=pose_aa_tpose, th_betas=betas_torch, th_trans=trans)
 
     # Height = top of head - lowest foot
