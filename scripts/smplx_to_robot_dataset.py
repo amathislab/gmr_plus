@@ -83,7 +83,7 @@ def process_file(smplx_file_path, tgt_file_path, tgt_robot, SMPLX_FOLDER, tgt_fo
     )
     qpos_list = []
     for smplx_frame_data in smplx_frame_data_list:
-        qpos = retargeter.retarget(smplx_frame_data)
+        qpos, _ = retargeter.retarget(smplx_frame_data)
         qpos_list.append(qpos.copy())
 
     qpos_list = np.array(qpos_list)

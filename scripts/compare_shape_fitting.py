@@ -185,7 +185,7 @@ def main():
 
     qpos_list_default = []
     for i, frame_data in enumerate(smplh_frames_default):
-        qpos = retarget_default.retarget(frame_data, offset_to_ground=True)
+        qpos, _ = retarget_default.retarget(frame_data, offset_to_ground=True)
         qpos_list_default.append(qpos)
         if i % 30 == 0:
             console.print(f"  Processing frame {i}/{len(smplh_frames_default)}")
@@ -204,7 +204,7 @@ def main():
 
     qpos_list_fitted = []
     for i, frame_data in enumerate(smplh_frames_fitted):
-        qpos = retarget_fitted.retarget(frame_data, offset_to_ground=True)
+        qpos, _ = retarget_fitted.retarget(frame_data, offset_to_ground=True)
         qpos_list_fitted.append(qpos)
         if i % 30 == 0:
             console.print(f"  Processing frame {i}/{len(smplh_frames_fitted)}")

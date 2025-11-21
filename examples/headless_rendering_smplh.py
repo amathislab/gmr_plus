@@ -88,7 +88,7 @@ for i, smplh_data in enumerate(smplh_data_frames):
         print(f"  Frame {i}/{len(smplh_data_frames)}")
 
     # Retarget human motion to robot
-    qpos = retarget.retarget(smplh_data, offset_to_ground=True)
+    qpos, _ = retarget.retarget(smplh_data, offset_to_ground=True)
 
     # Render frame to video
     robot_motion_viewer.step(

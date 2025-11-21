@@ -95,10 +95,10 @@ if __name__ == "__main__":
             qpos_list = []
             for curr_frame in range(len(lafan1_data_frames)):
                 smplx_data = lafan1_data_frames[curr_frame]
-                
+
                 # Retarget till convergence
-                qpos = retarget.retarget(smplx_data)
-                
+                qpos, _ = retarget.retarget(smplx_data)
+
                 qpos_list.append(qpos.copy())
             
             qpos_list = np.array(qpos_list)
