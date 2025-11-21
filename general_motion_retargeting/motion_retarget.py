@@ -7,6 +7,8 @@ from scipy.spatial.transform import Rotation as R
 from .params import ROBOT_XML_DICT, IK_CONFIG_DICT
 from .utils.shape_fitting import load_fitted_shape
 from rich import print
+from mink.tasks.equality_constraint_task import EqualityConstraintTask
+
 
 class GeneralMotionRetargeting:
     """General Motion Retargeting (GMR).
@@ -146,12 +148,28 @@ class GeneralMotionRetargeting:
         self.setup_retarget_configuration()
         
         self.ground_offset = 0.0
+    
+    def _add_equality_tasks(self, cur_task):
+        model = self.configuration.model
+
+        for eq_id in range(model.neq):
+            if model.eq_type[eq_id] == mj.mjtEq.mjEQ_JOINT:
+                task = EqualityConstraintTask(model, eq_id)
+                task.weight = 5.0
+                cur_task.append(task)
 
     def setup_retarget_configuration(self):
         self.configuration = mink.Configuration(self.model)
     
         self.tasks1 = []
         self.tasks2 = []
+
+        if self.use_ik_match_table1:
+            self._add_equality_tasks(self.tasks1)
+
+        if self.use_ik_match_table2:
+            self._add_equality_tasks(self.tasks2)
+        
         
         # learned offsets already loaded in __init__, no need to reload
 
@@ -297,9 +315,38 @@ class GeneralMotionRetargeting:
                 
                 next_error = self.error2()
                 num_iter += 1
-                
+        
+        final_curr_pos = []
+        final_tgt_pos  = []
+        self.frame_tasks_2 = [t for t in self.tasks2 if isinstance(t, mink.FrameTask)]
+
+        for task in self.frame_tasks_2:
+
+            # === Get current pose after IK converged ===
             
-        return self.configuration.data.qpos.copy()
+            T_curr = self.configuration.get_transform_frame_to_world(
+                task.frame_name,
+                task.frame_type,     # always "body" in your setup
+            )
+
+            # === Get TARGET pose stored inside the task ===
+            T_tgt = task.transform_target_to_world
+
+            # === Extract xyz translations ===
+            # mink.SE3 uses `.translation()` just like jaxlie
+            p_curr = np.array(T_curr.translation())
+            p_tgt  = np.array(T_tgt.translation())
+
+            final_curr_pos.append(p_curr)
+            final_tgt_pos.append(p_tgt)
+        
+        final_curr_pos = np.stack(final_curr_pos)   # (N, 3)
+        final_tgt_pos  = np.stack(final_tgt_pos)    # (N, 3)
+
+        body_diff = final_curr_pos - final_tgt_pos
+        body_diff_norm = np.linalg.norm(body_diff, axis=1)
+
+        return self.configuration.data.qpos.copy(), body_diff_norm
 
 
     def error1(self):
@@ -369,9 +416,17 @@ class GeneralMotionRetargeting:
     def offset_human_data_to_ground(self, human_data):
         """find the lowest point of the human data and offset the human data to the ground"""
         offset_human_data = {}
-        ground_offset = 0.1
+        ground_offset = 0
         lowest_pos = np.inf
 
+        # instead of using the food, we use the lowest point as the offset point
+        for body_name, (pos, quat) in human_data.items():
+            # pos is expected to be (x, y, z)
+            if pos[2] < lowest_pos:
+                lowest_pos = pos[2]
+                lowest_body_name = body_name
+
+        '''
         for body_name in human_data.keys():
             # only consider the foot/Foot
             if "Foot" not in body_name and "foot" not in body_name:
@@ -380,10 +435,12 @@ class GeneralMotionRetargeting:
             if pos[2] < lowest_pos:
                 lowest_pos = pos[2]
                 lowest_body_name = body_name
+        '''
         for body_name in human_data.keys():
             pos, quat = human_data[body_name]
-            offset_human_data[body_name] = [pos, quat]
+            offset_human_data[body_name] = [pos.copy(), quat.copy()]
             offset_human_data[body_name][0] = pos - np.array([0, 0, lowest_pos]) + np.array([0, 0, ground_offset])
+        
         return offset_human_data
 
     def set_ground_offset(self, ground_offset):
