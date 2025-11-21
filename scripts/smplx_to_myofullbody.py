@@ -5,43 +5,17 @@ import time
 import matplotlib.pyplot as plt
 import math
 import mujoco
-from utils import make_converted_amass_path
-from utils import fix_amass_file
+from scipy.spatial.transform import Rotation as R
+#from utils import make_converted_amass_path
+#from utils import fix_amass_file
 
 import numpy as np
 
 from general_motion_retargeting import GeneralMotionRetargeting as GMR
 from general_motion_retargeting import RobotMotionViewer
-from general_motion_retargeting.utils.smpl import load_smplh_file, get_smplh_data_offline_fast
+from general_motion_retargeting.utils.smpl import load_smplx_file, get_smplx_data_offline_fast, load_smplx_files_meta
 
 from rich import print
-
-left_shoulder_tendons = [
-    "DELT1_tendon_left",
-    "DELT2_tendon_left",
-    "DELT3_tendon_left",
-    "SUPSP_tendon_left",
-    "INFSP_tendon_left",
-    "SUBSC_tendon_left",
-    "TMIN_tendon_left",
-    "TMAJ_tendon_left",
-    "PECM1_tendon_left",
-    "PECM2_tendon_left",
-    "PECM3_tendon_left",
-    "LAT1_tendon_left",
-    "LAT2_tendon_left",
-    "LAT3_tendon_left",
-    "CORB_tendon_left",
-    "TRIlong_tendon_left",
-    "TRIlat_tendon_left",
-    "TRImed_tendon_left",
-    "ANC_tendon_left",
-    "SUP_tendon_left",
-    "BIClong_tendon_left",
-    "BICshort_tendon_left",
-    "BRA_tendon_left",
-    "BRD_tendon_left",
-]
 
 def max_penetration_with_floor(model, data, floor_name="floor", verbose=False):
     """
@@ -74,14 +48,41 @@ def max_penetration_with_floor(model, data, floor_name="floor", verbose=False):
 
     return max_pen, offending_geom, floor_id
 
+left_shoulder_tendons = [
+    "DELT1_tendon_left",
+    "DELT2_tendon_left",
+    "DELT3_tendon_left",
+    "SUPSP_tendon_left",
+    "INFSP_tendon_left",
+    "SUBSC_tendon_left",
+    "TMIN_tendon_left",
+    "TMAJ_tendon_left",
+    "PECM1_tendon_left",
+    "PECM2_tendon_left",
+    "PECM3_tendon_left",
+    "LAT1_tendon_left",
+    "LAT2_tendon_left",
+    "LAT3_tendon_left",
+    "CORB_tendon_left",
+    "TRIlong_tendon_left",
+    "TRIlat_tendon_left",
+    "TRImed_tendon_left",
+    "ANC_tendon_left",
+    "SUP_tendon_left",
+    "BIClong_tendon_left",
+    "BICshort_tendon_left",
+    "BRA_tendon_left",
+    "BRD_tendon_left",
+]
+
 if __name__ == "__main__":
 
     HERE = pathlib.Path(__file__).parent
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--smplh_file",
-        help="SMPL-H motion file to load (AMASS format).",
+        "--smplx_file",
+        help="SMPLX motion file to load (AMASS format).",
         type=str,
         # required=True,
         default="/media/data/share/AMASS/KIT/3/tennis_forehand_right04_poses.npz",
@@ -123,34 +124,57 @@ if __name__ == "__main__":
         help="Limit the rate of the retargeted robot motion to keep the same as the human motion.",
     )
 
+    parser.add_argument(
+        "--meta",
+        default='embody3d',
+        action="store_true",
+        help="Whether to load from Meta Embodied 3D",
+    )
+
+    parser.add_argument(
+        "--num_frames",
+        default=200,
+        type = int,
+        help="Number of frames to render",
+    )
+
     args = parser.parse_args()
 
 
-    SMPLH_FOLDER = HERE / ".." / "assets" / "body_models" / "smplh"
+    SMPLX_FOLDER = HERE / ".." / "assets" / "body_models"
 
 
     # Load SMPL-H trajectory
-    smplh_data, body_model, smplh_output, actual_human_height = load_smplh_file(
-        args.smplh_file, SMPLH_FOLDER
-    )
+    if args.meta:
+        smplx_data, body_model, smplx_output, actual_human_height = load_smplx_files_meta(
+            args.smplx_file, SMPLX_FOLDER
+        )
+    else:
+        smplx_data, body_model, smplx_output, actual_human_height = load_smplx_file(
+            args.smplx_file, SMPLX_FOLDER
+        )
 
 
     # align fps
     tgt_fps = 30
-    smplh_data_frames, aligned_fps = get_smplh_data_offline_fast(smplh_data, body_model, smplh_output, tgt_fps=tgt_fps)
+    NUM_FRAMES = args.num_frames
+    smplx_data_frames, aligned_fps = get_smplx_data_offline_fast(smplx_data, body_model, smplx_output, tgt_fps=tgt_fps)
 
+    smplx_data_frames = smplx_data_frames[:NUM_FRAMES]
+    #print("smplx_data", smplx_data_frames[0].shape)
 
     # Initialize the retargeting system
     retarget = GMR(
         actual_human_height=actual_human_height,
-        src_human="smplh",
+        src_human="smplx",
         tgt_robot=args.robot,
     )
     fixed_count = 0
     
     model = retarget.configuration.model
-
+    
     qpos = retarget.configuration.data.qpos.copy()
+ 
     for i in range(model.njnt):
         if model.jnt_limited[i]:
             qpos_adr = model.jnt_qposadr[i]
@@ -169,7 +193,7 @@ if __name__ == "__main__":
                                             motion_fps=aligned_fps,
                                             transparent_robot=0,
                                             record_video=args.record_video,
-                                            video_path=f"videos/{args.robot}_{args.smplh_file.split('/')[-1].split('.')[0]}.mp4",)
+                                            video_path=f"videos/{args.robot}_{args.smplx_file.split('/')[-2].split('.')[0]}.mp4",)
 
 
     curr_frame = 0
@@ -197,14 +221,13 @@ if __name__ == "__main__":
     # Start the viewer
     i = 0
     time_total =[]
-    max_pen = 0
 
     while True:
         if args.loop:
-            i = (i + 1) % len(smplh_data_frames)
+            i = (i + 1) % len(smplx_data_frames)
         else:
             i += 1
-            if i >= len(smplh_data_frames):
+            if i >= len(smplx_data_frames):
                 break
 
         # FPS measurement
@@ -217,16 +240,18 @@ if __name__ == "__main__":
             fps_start_time = current_time
 
         # Update task targets.
-        smplh_data = smplh_data_frames[i]
-        #print(smplh_data)
+        smplx_data = smplx_data_frames[i]
+        #print(smplx_data)
 
         # retarget
         time1 = time.time()
-        qpos = retarget.retarget(smplh_data, offset_to_ground=True)
+        qpos, _ = retarget.retarget(smplx_data, offset_to_ground=True)
         mujoco.mj_forward(retarget.configuration.model, retarget.configuration.data)
         pen, geom_id, floor_id = max_penetration_with_floor(
-            retarget.configuration.model, retarget.configuration.data
-        )
+                retarget.configuration.model, retarget.configuration.data
+            )
+        qpos[2] -= pen
+
         time2 = time.time()
         time_total.append(time2 - time1)
 
@@ -236,7 +261,7 @@ if __name__ == "__main__":
             root_rot=qpos[3:7],
             dof_pos=qpos[7:],
             human_motion_data=retarget.scaled_human_data,
-            # human_motion_data=smplh_data,
+            # human_motion_data=smplx_data,
             human_pos_offset=np.array([0.0, 0.0, 0.0]),
             show_human_body_name=False,
             rate_limit=args.rate_limit,
@@ -257,9 +282,6 @@ if __name__ == "__main__":
 
     print(f"\n[INFO] Average retargeting time per frame: {np.mean(time_total)*1000:.2f} ms")
 
-    if max_pen < 0:
-        for q in qpos:
-            q[2] -= max_pen
 
 
     if args.save_path is not None:
@@ -283,8 +305,13 @@ if __name__ == "__main__":
             pickle.dump(motion_data, f)
         print(f"Saved to {args.save_path}")
 
-        save_path = make_converted_amass_path(args.smplh_file, args.robot)
-        npz_path = save_path.replace(".pkl", ".npz").replace(".pickle", ".npz")
+        #save_path = make_converted_amass_path(args.smplx_file, args.robot)
+        #npz_path = save_path.replace(".pkl", ".npz").replace(".pickle", ".npz")
+        out_dir = "/media/data/cheryl/gmr_plus/converted"
+        os.makedirs(out_dir, exist_ok=True)
+
+        filename = os.path.basename(args.smplx_file).replace(".npy", ".npz")
+        npz_path = os.path.join(out_dir, filename)
 
         qpos_arr         = np.array(qpos_list)
         qvel_arr         = np.array(qvel_list)
@@ -380,7 +407,7 @@ if __name__ == "__main__":
         print(f"Full kinematic NPZ saved to {npz_path}")
 
         print("[Info] Converting GMR generated trajectory to Musclemimic training compatible trajectory ... ")
-        fix_amass_file(npz_path)
+        #fix_amass_file(npz_path)
 
     print("\n[INFO] Saving full joint trajectory...")
 

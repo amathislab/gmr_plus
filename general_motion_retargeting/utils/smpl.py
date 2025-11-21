@@ -6,14 +6,7 @@ from scipy.spatial.transform import Rotation as R
 from smplx.joint_names import JOINT_NAMES
 from scipy.interpolate import interp1d
 from smplx import SMPLH as _SMPLH
-from smplx.utils import match_dim
-from smplx.lbs import (
-    blend_shapes,
-    vertices2joints,
-    batch_rodrigues,
-    batch_rigid_transform,
-    transform_mat,
-)
+import os
 
 import general_motion_retargeting.utils.lafan_vendor.utils as utils
 from general_motion_retargeting.utils.shape_fitting import load_fitted_shape
@@ -134,6 +127,117 @@ def load_smpl_file(smpl_file):
     smpl_data = np.load(smpl_file, allow_pickle=True)
     return smpl_data
 
+def load_smplx_files_meta(folder_path, smplx_body_model_path, gender="neutral"):
+    """
+    Load SMPL-X data from a folder that contains subfolders like:
+        smplx_mesh_betas/
+        smplx_mesh_body_pose/
+        smplx_mesh_global_orient/
+        smplx_mesh_left_hand_pose/
+        smplx_mesh_right_hand_pose/
+        smplx_mesh_transl/
+
+    and return the same outputs as `load_smplx_file`:
+        smplx_data, body_model, smplx_output, human_height
+    """
+
+    # Map subfolder names -> keys you used in npz version
+    folder_map = {
+        "smplx_mesh_betas": "betas",
+        "smplx_mesh_body_pose": "pose_body",
+        "smplx_mesh_global_orient": "root_orient",
+        "smplx_mesh_transl": "trans",
+        "smplx_mesh_left_hand_pose": "left_hand_pose",
+        "smplx_mesh_right_hand_pose": "right_hand_pose",
+    }
+
+    smplx_data = {}
+
+    def _load_and_concat(subdir):
+        """Load all .npy files in a subdir and concat along time."""
+        arrays = []
+        for f in sorted(os.listdir(subdir)):
+            if f.endswith(".npy"):
+                arrays.append(np.load(os.path.join(subdir, f)))
+        if not arrays:
+            return None
+        return arrays[0] if len(arrays) == 1 else np.concatenate(arrays, axis=0)
+
+    # Load each attribute from its folder
+    for subfolder, key in folder_map.items():
+        path = os.path.join(folder_path, subfolder)
+        if os.path.isdir(path):
+            arr = _load_and_concat(path)
+            if arr is not None:
+                smplx_data[key] = arr
+
+    # Basic sanity: pose_body must exist
+    if "pose_body" not in smplx_data:
+        raise ValueError(f"Could not find pose_body (smplx_mesh_body_pose) in {folder_path}")
+
+    num_frames = smplx_data["pose_body"].shape[0]
+
+    # If hands are missing, fill with zeros like your original function
+    if "left_hand_pose" not in smplx_data:
+        smplx_data["left_hand_pose"] = np.zeros((num_frames, 45), dtype=np.float32)
+    if "right_hand_pose" not in smplx_data:
+        smplx_data["right_hand_pose"] = np.zeros((num_frames, 45), dtype=np.float32)
+
+    # Betas: if missing or per-frame, fall back to first frame
+    if "betas" not in smplx_data:
+        raise ValueError(f"Could not find betas (smplx_mesh_betas) in {folder_path}")
+    betas = smplx_data["betas"]
+    if betas.ndim > 1:
+        # assume (T, n_betas) or (1, n_betas); use first row
+        betas_single = betas[0]
+    else:
+        betas_single = betas
+    smplx_data["betas"] = betas_single
+
+    # Gender (no file, so we pass it in)
+    smplx_data["gender"] = gender
+    smplx_data["mocap_frame_rate"] = torch.tensor(30)
+    smplx_data["trans"] = smplx_data["trans"][..., [2, 1, 0]]
+    root_orient = smplx_data["root_orient"]      # shape (T, 3), axis-angle
+
+    R_orig = R.from_rotvec(root_orient)          # (T,)
+    R_fix = R.from_matrix(np.array([
+        [0, 0, 1],    # new X = old Z (forward)
+        [1, 0, 0],   # new Y = -old X (left)
+        [0, 1, 0],    # new Z = old Y (up)
+    ]))
+
+    R_new = R_fix * R_orig
+    smplx_data["root_orient"] = R_new.as_rotvec()
+
+    # Create SMPL-X model
+    body_model = smplx.create(
+        smplx_body_model_path,
+        model_type="smplx",
+        gender=str(gender),
+        use_pca=False,
+        num_betas=300, 
+    )
+
+    smplx_output = body_model(
+        betas=torch.tensor(smplx_data["betas"]).float().view(1, -1),
+        global_orient=torch.tensor(smplx_data["root_orient"]).float(),   # (N, 3)
+        body_pose=torch.tensor(smplx_data["pose_body"]).float(),        # (N, 63)
+        transl=torch.tensor(smplx_data["trans"]).float(),               # (N, 3)
+        left_hand_pose=torch.tensor(smplx_data["left_hand_pose"]).float(),
+        right_hand_pose=torch.tensor(smplx_data["right_hand_pose"]).float(),
+        jaw_pose=torch.zeros(num_frames, 3).float(),
+        leye_pose=torch.zeros(num_frames, 3).float(),
+        reye_pose=torch.zeros(num_frames, 3).float(),
+        return_full_pose=True,
+    )
+
+    if smplx_data["betas"].ndim == 1:
+        human_height = 1.66 + 0.1 * smplx_data["betas"][0]
+    else:
+        human_height = 1.66 + 0.1 * smplx_data["betas"][0, 0]
+
+    return smplx_data, body_model, smplx_output, human_height
 
 def load_smplx_file(smplx_file, smplx_body_model_path):
     smplx_data = np.load(smplx_file, allow_pickle=True)
