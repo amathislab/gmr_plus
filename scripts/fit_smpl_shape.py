@@ -152,6 +152,7 @@ def main():
         lr=args.lr,
         device=args.device,
         verbose=True,
+        robot_type=args.robot,  # Robot-specific SMPL T-pose rotation
     )
 
     # Compute LOCAL frame offsets for GMR's offset_human_data() function
@@ -165,6 +166,7 @@ def main():
         human_joint_names,
         target_positions,
         target_rotations if target_rotations is not None else np.eye(3)[None].repeat(len(target_positions), axis=0),
+        robot_type=args.robot,  # Robot-specific SMPL T-pose rotation
     )
     console.print(f"  ✓ Computed LOCAL frame offsets for {len(local_offsets['pos_offsets'])} joints")
 

@@ -53,7 +53,36 @@ ROBOT_TPOSE_CONFIGS = {
         "right_shoulder_roll": -np.pi / 2,
         "right_elbow": np.pi / 2,
     },
+    "myofullbody": {
+        "shoulder_elv_r": np.pi / 2,
+        "shoulder_elv_l": np.pi / 2,
+    },
 }
+
+# SMPL T-pose pelvis rotation (Euler XYZ in radians) for each robot's coordinate system
+# SMPL native: Y-up, arms along X axis
+# After rotation: should align with robot's coordinate convention
+SMPL_TPOSE_ROTATIONS = {
+    # myofullbody: forward=+Y in SMPL native -> forward=+X in MuJoCo (Z-up)
+    # Only need Y-up to Z-up conversion (π/2 about X)
+    "myofullbody": [np.pi / 2, 0.0, 0.0],
+
+    # unitree_g1: forward=+Y in SMPL native -> forward=+X in G1's frame
+    # G1 uses different axis convention, needs extra yaw
+    "unitree_g1": [np.pi / 2, 0.0, np.pi / 2],
+
+    # unitree_h1: same as G1
+    "unitree_h1": [np.pi / 2, 0.0, np.pi / 2],
+}
+
+# Default rotation for unknown robots
+SMPL_TPOSE_DEFAULT = [np.pi / 2, 0.0, 0.0]
+
+
+def get_smpl_tpose_rotation(robot_type: str) -> np.ndarray:
+    """Get the SMPL T-pose pelvis rotation for a specific robot."""
+    euler_xyz = SMPL_TPOSE_ROTATIONS.get(robot_type, SMPL_TPOSE_DEFAULT)
+    return sRot.from_euler("xyz", euler_xyz, degrees=False).as_rotvec()
 
 
 def check_torch_availability():
@@ -191,6 +220,7 @@ def fit_smpl_shape_to_robot(
     lr: float = 1e-3,
     device: str = "cpu",
     verbose: bool = True,
+    robot_type: str = "myofullbody",
 ) -> Tuple[torch.Tensor, torch.Tensor, np.ndarray, np.ndarray, float, float, Dict]:
     """
     Optimize SMPL-H shape parameters to match robot target positions.
@@ -207,6 +237,7 @@ def fit_smpl_shape_to_robot(
         lr: Learning rate for Adam optimizer
         device: PyTorch device ('cpu' or 'cuda')
         verbose: Print optimization progress
+        robot_type: Robot type for selecting correct SMPL T-pose rotation
 
     Returns:
         optimized_shape: (1, 16) optimized beta parameters
@@ -228,9 +259,9 @@ def fit_smpl_shape_to_robot(
     shape = Variable(torch.zeros([1, 16]).to(device), requires_grad=True)
     scale = Variable(torch.ones([1]).to(device), requires_grad=True)
 
-    # T-pose for SMPL-H: pelvis rotated to face forward
+    # T-pose for SMPL-H: pelvis rotated to align with robot's coordinate system
     pose_aa_tpose = np.zeros((1, 156)).reshape(-1, 52, 3)
-    pose_aa_tpose[:, 0] = sRot.from_euler("xyz", [np.pi/2, 0.0, np.pi/2], degrees=False).as_rotvec()  # Pelvis
+    pose_aa_tpose[:, 0] = get_smpl_tpose_rotation(robot_type)  # Robot-specific pelvis rotation
     pose_aa_tpose = torch.from_numpy(pose_aa_tpose.reshape(-1, 156)).float().to(device)
     trans = torch.zeros([1, 3]).to(device)
 
@@ -373,17 +404,29 @@ def compute_alignment_offsets(
     human_joint_names: List[str],
     target_positions: np.ndarray,
     target_rotations: np.ndarray,
+    robot_type: str = "myofullbody",
 ) -> Dict:
     """Compute SMPL→robot offsets using full joint transforms.
 
-    Rot offset: R_smpl^T @ R_robot;
-    Pos offset (robot local): R_robot^T (p_robot - p_smpl).
+    Extracts a global rotation offset (from pelvis) and per-joint LOCAL rotation
+    offsets (relative to pelvis). This separates the coordinate frame difference
+    (global) from per-joint alignment corrections (local).
+
+    Rotation convention:
+        - global_rot_offset: R_smpl_pelvis^T @ R_robot_pelvis (coordinate axis flip)
+        - local_rot_offset[joint]: global_rot_offset^T @ (R_smpl[joint]^T @ R_robot[joint])
+        - Application: R_new = R_smpl @ global_rot_offset @ local_rot_offset[joint]
+
+    Position offset (robot local frame):
+        pos_offset = R_robot^T @ (p_robot - p_smpl)  [centered at pelvis]
+
+    All quaternions stored in wxyz format.
     """
     check_torch_availability()
 
     device = shape.device
     pose_aa_tpose = np.zeros((1, 156)).reshape(-1, 52, 3)
-    pose_aa_tpose[:, 0] = sRot.from_euler("xyz", [np.pi/2, 0.0, np.pi/2], degrees=False).as_rotvec()
+    pose_aa_tpose[:, 0] = get_smpl_tpose_rotation(robot_type)  # Robot-specific pelvis rotation
     pose_aa_tpose = torch.from_numpy(pose_aa_tpose.reshape(-1, 156)).float().to(device)
     trans = torch.zeros([1, 3]).to(device)
 
@@ -414,15 +457,36 @@ def compute_alignment_offsets(
     else:
         global_rot = np.repeat(np.eye(3)[None], global_pos.shape[0], axis=0)
 
-    offsets = {"pos_offsets": {}, "rot_offsets": {}, "human_joint_names": human_joint_names}
-
     # Find pelvis index for centering (fallback to first if missing)
     try:
         root_idx = human_joint_names.index("pelvis")
     except ValueError:
         root_idx = 0
+
     smpl_root = global_pos[smpl_joint_indices[root_idx]]
     robot_root = target_positions[root_idx]
+
+    # Compute global rotation offset from pelvis
+    pelvis_smpl_idx = smpl_joint_indices[root_idx]
+    pelvis_smpl_rot = global_rot[pelvis_smpl_idx]
+    pelvis_robot_rot = target_rotations[root_idx] if target_rotations is not None else np.eye(3)
+    global_rot_offset_mat = pelvis_smpl_rot.T @ pelvis_robot_rot  # R_smpl^T @ R_robot
+
+    # Convert global offset to quaternion (wxyz)
+    global_quat_xyzw = sRot.from_matrix(global_rot_offset_mat).as_quat()
+    global_rot_offset_wxyz = [
+        float(global_quat_xyzw[3]),
+        float(global_quat_xyzw[0]),
+        float(global_quat_xyzw[1]),
+        float(global_quat_xyzw[2]),
+    ]
+
+    offsets = {
+        "pos_offsets": {},
+        "rot_offsets": {},  # LOCAL offsets (relative to pelvis)
+        "global_rot_offset": global_rot_offset_wxyz,  # Coordinate frame difference
+        "human_joint_names": human_joint_names,
+    }
 
     for idx, human_name in enumerate(human_joint_names):
         smpl_idx = smpl_joint_indices[idx]
@@ -431,15 +495,27 @@ def compute_alignment_offsets(
         robot_pos = target_positions[idx]
         robot_rot = target_rotations[idx] if target_rotations is not None else np.eye(3)
 
-        rot_offset = smpl_rot.T @ robot_rot
-        quat_xyzw = sRot.from_matrix(rot_offset).as_quat()
-        quat_wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
+        # Full rotation offset (global frame): R_smpl^T @ R_robot
+        full_rot_offset_mat = smpl_rot.T @ robot_rot
 
-        # Center in pelvis frame to match optimization convention
+        # LOCAL rotation offset: global^T @ full = (R_smpl_pelvis^T @ R_robot_pelvis)^T @ (R_smpl^T @ R_robot)
+        # This removes the global coordinate frame difference, leaving only per-joint correction
+        local_rot_offset_mat = global_rot_offset_mat.T @ full_rot_offset_mat
+
+        # Convert to quaternion (wxyz)
+        local_quat_xyzw = sRot.from_matrix(local_rot_offset_mat).as_quat()
+        local_quat_wxyz = [
+            float(local_quat_xyzw[3]),
+            float(local_quat_xyzw[0]),
+            float(local_quat_xyzw[1]),
+            float(local_quat_xyzw[2]),
+        ]
+
+        # Position offset in robot local frame (centered at pelvis)
         pos_offset_local = robot_rot.T @ ((robot_pos - robot_root) - (smpl_pos - smpl_root))
 
-        offsets["pos_offsets"][human_name] = pos_offset_local.tolist()
-        offsets["rot_offsets"][human_name] = quat_wxyz.tolist()
+        offsets["pos_offsets"][human_name] = [float(x) for x in pos_offset_local]
+        offsets["rot_offsets"][human_name] = local_quat_wxyz
 
     return offsets
 
@@ -638,7 +714,7 @@ def compute_smpl_height(shape: np.ndarray, smplh_model_path: str) -> float:
 
     # T-pose
     pose_aa_tpose = np.zeros((1, 156)).reshape(-1, 52, 3)
-    pose_aa_tpose[:, 0] = sRot.from_euler('xyz', [np.pi/2, 0.0, np.pi/2], degrees=False).as_rotvec()
+    pose_aa_tpose[:, 0] = sRot.from_euler('xyz', [np.pi/2, 0.0, 0.0], degrees=False).as_rotvec()
     pose_aa_tpose = torch.from_numpy(pose_aa_tpose.reshape(-1, 156)).float()
     trans = torch.zeros([1, 3])
 
