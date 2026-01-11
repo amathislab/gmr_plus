@@ -212,9 +212,21 @@ class GeneralMotionRetargeting:
             pos_offsets = self.learned_offsets.get("pos_offsets", {})
             rot_offsets = self.learned_offsets.get("rot_offsets", {})
             if body_name in pos_offsets and body_name in rot_offsets:
+                # Get local rotation offset
+                R_local = R.from_quat(rot_offsets[body_name], scalar_first=True)
+
+                # Compose with global rotation offset if present
+                # R_total = R_global * R_local (global on left, local on right)
+                global_rot = self.learned_offsets.get("global_rot_offset", None)
+                if global_rot is not None:
+                    R_global = R.from_quat(global_rot, scalar_first=True)
+                    R_total = R_global * R_local
+                else:
+                    R_total = R_local
+
                 return (
                     np.array(pos_offsets[body_name], dtype=float),
-                    R.from_quat(rot_offsets[body_name], scalar_first=True),
+                    R_total,
                 )
 
         pos = np.array(default_pos, dtype=float) - self.ground
@@ -238,11 +250,19 @@ class GeneralMotionRetargeting:
 
         if use_learned_offsets:
             # Convert learned offsets dict to format expected by offset_human_data()
+            # Apply global_rot_offset composition: R_total = R_global * R_local
             learned_pos_offsets = {}
             learned_rot_offsets = {}
+
+            # Get global rotation offset if present
+            global_rot = self.learned_offsets.get("global_rot_offset", None)
+            R_global = R.from_quat(global_rot, scalar_first=True) if global_rot is not None else R.identity()
+
             for body_name in self.learned_offsets["pos_offsets"].keys():
                 learned_pos_offsets[body_name] = np.array(self.learned_offsets["pos_offsets"][body_name])
-                learned_rot_offsets[body_name] = R.from_quat(self.learned_offsets["rot_offsets"][body_name], scalar_first=True)
+                # Compose: R_total = R_global * R_local
+                R_local = R.from_quat(self.learned_offsets["rot_offsets"][body_name], scalar_first=True)
+                learned_rot_offsets[body_name] = R_global * R_local
 
             # Apply learned offsets
             human_data = self.offset_human_data(human_data, learned_pos_offsets, learned_rot_offsets)
