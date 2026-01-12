@@ -148,7 +148,7 @@ if __name__ == "__main__":
         smplh_data = smplh_data_frames[i]
 
         # retarget
-        qpos, _ = retarget.retarget(smplh_data, offset_to_ground=True)
+        qpos, _ = retarget.retarget(smplh_data, offset_to_ground=False)
 
         # visualize
         robot_motion_viewer.step(
