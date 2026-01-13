@@ -5,6 +5,7 @@ import numpy as np
 import json
 from scipy.spatial.transform import Rotation as R
 from .params import ROBOT_XML_DICT, IK_CONFIG_DICT
+from .utils.shape_fitting import load_fitted_shape
 from rich import print
 from mink.tasks.equality_constraint_task import EqualityConstraintTask
 
@@ -21,6 +22,8 @@ class GeneralMotionRetargeting:
         damping: float=5e-1, # change from 1e-1 to 1e-2.
         verbose: bool=True,
         use_velocity_limit: bool=False,
+        use_fitted_shape: bool=False,  # Whether using fitted shape
+        fitted_shape_path: str=None,
     ) -> None:
 
         # load the robot model
@@ -60,16 +63,55 @@ class GeneralMotionRetargeting:
             ik_config = json.load(f)
         if verbose:
             print("Use IK config: ", IK_CONFIG_DICT[src_human][tgt_robot])
-        
-        # compute the scale ratio based on given human height and the assumption in the IK config
-        if actual_human_height is not None:
-            ratio = actual_human_height / ik_config["human_height_assumption"]
-        else:
-            ratio = 1.0
-            
+        # Auto-enable fitted shape if path is provided
+        if fitted_shape_path is not None and not use_fitted_shape:
+            use_fitted_shape = True
+            if verbose:
+                print(f"[GMR] Auto-enabled use_fitted_shape=True (fitted_shape_path provided)")
+
+        self.use_fitted_shape = use_fitted_shape
+        self.fitted_shape_path = fitted_shape_path
+        self.learned_offsets = None
+
         # adjust the human scale table
-        for key in ik_config["human_scale_table"].keys():
-            ik_config["human_scale_table"][key] = ik_config["human_scale_table"][key] * ratio
+        if use_fitted_shape:
+            # When using fitted shape, the fitted_scale is already applied directly to SMPL joints
+            # in load_smplh_file(). We do not apply any additional scaling here.
+            for key in ik_config["human_scale_table"].keys():
+                ik_config["human_scale_table"][key] = 1.0
+            if verbose:
+                print(f"[GMR] Using fitted shape: fitted_scale already applied to SMPL joints, skipping manual scaling (scale_table=1.0)")
+            if fitted_shape_path is not None:
+                if verbose:
+                    print(f"[GMR] Attempting to load fitted shape from {fitted_shape_path}")
+                try:
+                    shape, scale, offset_z, height_scale, offsets = load_fitted_shape(fitted_shape_path)
+                    self.fitted_shape = shape
+                    self.fitted_scale = scale
+                    self.fitted_offset_z = offset_z
+                    self.fitted_height_scale = height_scale
+                    self.learned_offsets = offsets
+                    if verbose:
+                        print(f"[GMR] ✓ Loaded fitted shape successfully")
+                        print(f"  offset_z: {offset_z:.4f} m, height_scale: {height_scale:.4f}")
+                        print(f"  Offsets keys: {offsets.keys() if offsets else 'None'}")
+                        if offsets and "pos_offsets" in offsets:
+                            print(f"  ✓ Loaded learned offsets: {len(offsets['pos_offsets'])} joints")
+                except Exception as e:
+                    import traceback
+                    if verbose:
+                        print(f"[GMR] ✗ Failed to load fitted shape from {fitted_shape_path}")
+                        print(f"  Error: {e}")
+                        traceback.print_exc()
+        else:
+            # Without fitted shape, use height-based scaling
+            if actual_human_height is not None:
+                ratio = actual_human_height / ik_config["human_height_assumption"]
+            else:
+                ratio = 1.0
+
+            for key in ik_config["human_scale_table"].keys():
+                ik_config["human_scale_table"][key] = ik_config["human_scale_table"][key] * ratio
     
 
         # used for retargeting
@@ -93,6 +135,7 @@ class GeneralMotionRetargeting:
         self.rot_offsets1 = {}
         self.pos_offsets2 = {}
         self.rot_offsets2 = {}
+        # Note: self.learned_offsets is already initialized above (line 72) and set during fitted shape loading
 
         self.task_errors1 = {}
         self.task_errors2 = {}
@@ -128,6 +171,8 @@ class GeneralMotionRetargeting:
             self._add_equality_tasks(self.tasks2)
         
         
+        # learned offsets already loaded in __init__, no need to reload
+
         for frame_name, entry in self.ik_match_table1.items():
             body_name, pos_weight, rot_weight, pos_offset, rot_offset = entry
             if pos_weight != 0 or rot_weight != 0:
@@ -139,10 +184,9 @@ class GeneralMotionRetargeting:
                     lm_damping=1,
                 )
                 self.human_body_to_task1[body_name] = task
-                self.pos_offsets1[body_name] = np.array(pos_offset) - self.ground
-                self.rot_offsets1[body_name] = R.from_quat(
-                    rot_offset, scalar_first=True
-                )
+                pos, rot = self._resolve_offsets(body_name, pos_offset, rot_offset)
+                self.pos_offsets1[body_name] = pos
+                self.rot_offsets1[body_name] = rot
                 self.tasks1.append(task)
                 self.task_errors1[task] = []
         
@@ -157,19 +201,75 @@ class GeneralMotionRetargeting:
                     lm_damping=1,
                 )
                 self.human_body_to_task2[body_name] = task
-                self.pos_offsets2[body_name] = np.array(pos_offset) - self.ground
-                self.rot_offsets2[body_name] = R.from_quat(
-                    rot_offset, scalar_first=True
-                )
+                pos, rot = self._resolve_offsets(body_name, pos_offset, rot_offset)
+                self.pos_offsets2[body_name] = pos
+                self.rot_offsets2[body_name] = rot
                 self.tasks2.append(task)
                 self.task_errors2[task] = []
+
+    def _resolve_offsets(self, body_name, default_pos, default_rot):
+        if self.learned_offsets is not None:
+            pos_offsets = self.learned_offsets.get("pos_offsets", {})
+            rot_offsets = self.learned_offsets.get("rot_offsets", {})
+            if body_name in pos_offsets and body_name in rot_offsets:
+                # Get local rotation offset
+                R_local = R.from_quat(rot_offsets[body_name], scalar_first=True)
+
+                # Compose with global rotation offset if present
+                # R_total = R_global * R_local (global on left, local on right)
+                global_rot = self.learned_offsets.get("global_rot_offset", None)
+                if global_rot is not None:
+                    R_global = R.from_quat(global_rot, scalar_first=True)
+                    R_total = R_global * R_local
+                else:
+                    R_total = R_local
+
+                return (
+                    np.array(pos_offsets[body_name], dtype=float),
+                    R_total,
+                )
+
+        pos = np.array(default_pos, dtype=float) - self.ground
+        rot = R.from_quat(default_rot, scalar_first=True)
+        return pos, rot
 
   
     def update_targets(self, human_data, offset_to_ground=False):
         # scale human data in local frame
         human_data = self.to_numpy(human_data)
         human_data = self.scale_human_data(human_data, self.human_root_name, self.human_scale_table)
-        human_data = self.offset_human_data(human_data, self.pos_offsets1, self.rot_offsets1)
+
+        # Apply offsets: either learned offsets from shape fitting, or hard-coded JSON offsets
+        # Learned offsets are computed by compute_alignment_offsets() in robot's T-pose local frame (centered at roots)
+        # They rotate with robot's target rotation at runtime (see offset_human_data implementation)
+        use_learned_offsets = (
+            self.learned_offsets is not None and
+            "pos_offsets" in self.learned_offsets and
+            "rot_offsets" in self.learned_offsets
+        )
+
+        if use_learned_offsets:
+            # Convert learned offsets dict to format expected by offset_human_data()
+            # Apply global_rot_offset composition: R_total = R_global * R_local
+            learned_pos_offsets = {}
+            learned_rot_offsets = {}
+
+            # Get global rotation offset if present
+            global_rot = self.learned_offsets.get("global_rot_offset", None)
+            R_global = R.from_quat(global_rot, scalar_first=True) if global_rot is not None else R.identity()
+
+            for body_name in self.learned_offsets["pos_offsets"].keys():
+                learned_pos_offsets[body_name] = np.array(self.learned_offsets["pos_offsets"][body_name])
+                # Compose: R_total = R_global * R_local
+                R_local = R.from_quat(self.learned_offsets["rot_offsets"][body_name], scalar_first=True)
+                learned_rot_offsets[body_name] = R_global * R_local
+
+            # Apply learned offsets
+            human_data = self.offset_human_data(human_data, learned_pos_offsets, learned_rot_offsets)
+        else:
+            # Use hard-coded JSON offsets
+            human_data = self.offset_human_data(human_data, self.pos_offsets1, self.rot_offsets1)
+
         human_data = self.apply_ground_offset(human_data)
         if offset_to_ground:
             human_data = self.offset_human_data_to_ground(human_data)
@@ -179,12 +279,15 @@ class GeneralMotionRetargeting:
             for body_name in self.human_body_to_task1.keys():
                 task = self.human_body_to_task1[body_name]
                 pos, rot = human_data[body_name]
+                # Offsets (either learned or JSON) have already been applied globally to human_data
+                # So we just set the targets directly
                 task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3(rot), pos))
-        
+
         if self.use_ik_match_table2:
             for body_name in self.human_body_to_task2.keys():
                 task = self.human_body_to_task2[body_name]
                 pos, rot = human_data[body_name]
+                # Offsets (either learned or JSON) have already been applied globally to human_data
                 task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3(rot), pos))
             
             
@@ -366,5 +469,6 @@ class GeneralMotionRetargeting:
     def apply_ground_offset(self, human_data):
         for body_name in human_data.keys():
             pos, quat = human_data[body_name]
-            human_data[body_name][0] = pos - np.array([0, 0, self.ground_offset])
+            new_pos = pos - np.array([0, 0, self.ground_offset])
+            human_data[body_name] = (new_pos, quat)  # Create new tuple instead of modifying existing one
         return human_data

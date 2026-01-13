@@ -37,7 +37,7 @@ def main(args):
     while True:
         frame = client.get_frame()
         frame_number = client.get_frame_number()
-        qpos = retarget.retarget(frame)
+        qpos, _ = retarget.retarget(frame)
         viewer.step(
             root_pos=qpos[:3],
             root_rot=qpos[3:7],

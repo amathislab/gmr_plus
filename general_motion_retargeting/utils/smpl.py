@@ -1,12 +1,22 @@
 import numpy as np
 import smplx
 import torch
+from torch.nn import functional as F
 from scipy.spatial.transform import Rotation as R
 from smplx.joint_names import JOINT_NAMES
 from scipy.interpolate import interp1d
 from smplx import SMPLH as _SMPLH
+from smplx.utils import match_dim
+from smplx.lbs import (
+    blend_shapes,
+    vertices2joints,
+    batch_rodrigues,
+    batch_rigid_transform,
+    transform_mat,
+)
 
 import general_motion_retargeting.utils.lafan_vendor.utils as utils
+from general_motion_retargeting.utils.shape_fitting import load_fitted_shape
 
 
 # SMPLH joint names (52 joints: 22 body + 30 hands)
@@ -21,6 +31,8 @@ SMPLH_BONE_ORDER_NAMES = [
     'R_Pinky1', 'R_Pinky2', 'R_Pinky3', 'R_Ring1', 'R_Ring2', 'R_Ring3',
     'R_Thumb1', 'R_Thumb2', 'R_Thumb3'
 ]
+
+SMPLH_JOINT_NAMES = SMPLH_BONE_ORDER_NAMES
 
 
 class SMPLH_Parser(_SMPLH):
@@ -67,6 +79,55 @@ class SMPLH_Parser(_SMPLH):
         joints = smpl_output.joints
         return vertices, joints
 
+    def get_joint_transformations(self, pose, th_betas=None, th_trans=None):
+        """Return per-joint 4x4 transforms in global frame for given pose/betas/trans."""
+        if pose.shape[1] != 156:
+            pose = pose.reshape(-1, 156)
+        pose = pose.float()
+        if th_betas is not None:
+            th_betas = th_betas.float()
+
+        batch_size = max(
+            th_betas.shape[0] if th_betas is not None else 1,
+            pose.shape[0],
+        )
+
+        global_orient = pose[:, :3]
+        body_pose = pose[:, 3:66]
+        left_hand_pose = pose[:, 66:111]
+        right_hand_pose = pose[:, 111:156]
+
+        global_orient = match_dim(global_orient, batch_size)
+        body_pose = match_dim(body_pose, batch_size)
+        left_hand_pose = match_dim(left_hand_pose, batch_size)
+        right_hand_pose = match_dim(right_hand_pose, batch_size)
+        betas = th_betas if th_betas is not None else match_dim(self.betas, batch_size)
+
+        if self.use_pca:
+            left_hand_pose = torch.einsum("bi,ij->bj", [left_hand_pose, self.left_hand_components])
+            right_hand_pose = torch.einsum("bi,ij->bj", [right_hand_pose, self.right_hand_components])
+
+        full_pose = torch.cat([global_orient, body_pose, left_hand_pose, right_hand_pose], dim=1)
+        full_pose += self.pose_mean
+
+        device, dtype = betas.device, betas.dtype
+
+        v_shaped = self.v_template + blend_shapes(betas, self.shapedirs)
+        J = vertices2joints(self.J_regressor, v_shaped)
+
+        rot_mats = batch_rodrigues(full_pose.view(-1, 3)).view([batch_size, -1, 3, 3])
+
+        posed_joints, transforms = batch_rigid_transform(rot_mats, J, self.parents, dtype=dtype)
+
+        if th_trans is not None:
+            transl = th_trans.view(batch_size, 3)
+            T = torch.eye(4, device=device, dtype=dtype).unsqueeze(0).repeat(batch_size, 1, 1)
+            T[:, :3, 3] = transl
+            transforms = torch.matmul(T[:, None, :, :], transforms)
+            posed_joints = posed_joints + transl.unsqueeze(1)
+
+        return transforms
+
 
 def load_smpl_file(smpl_file):
     smpl_data = np.load(smpl_file, allow_pickle=True)
@@ -109,7 +170,7 @@ def load_smplx_file(smplx_file, smplx_body_model_path):
     return smplx_data, body_model, smplx_output, human_height
 
 
-def load_smplh_file(smplh_file, smplh_body_model_path):
+def load_smplh_file(smplh_file, smplh_body_model_path, fitted_shape_path=None):
     """Load SMPL-H data and create body model.
 
     SMPL-H has 52 joints (22 body + 30 hands, no face) and 10 shape parameters.
@@ -118,6 +179,12 @@ def load_smplh_file(smplh_file, smplh_body_model_path):
     Handles two formats:
     1. AMASS format: 'poses' array (N, 156) = root(3) + body(63) + hands(90)
     2. Standard format: separate 'root_orient', 'pose_body', hand pose arrays
+
+    Args:
+        smplh_file: Path to SMPL-H motion data file (.npz)
+        smplh_body_model_path: Path to SMPL-H body models directory
+        fitted_shape_path: Optional path to fitted shape parameters (.pkl)
+                          If provided, uses optimized shape instead of data betas
     """
     smplh_data = np.load(smplh_file, allow_pickle=True)
 
@@ -133,6 +200,9 @@ def load_smplh_file(smplh_file, smplh_body_model_path):
         # AMASS uses 'mocap_framerate' key
         if "mocap_framerate" in smplh_data:
             smplh_data["mocap_frame_rate"] = torch.tensor(smplh_data["mocap_framerate"])
+    else:
+        # For non-AMASS files, convert to mutable dict for metadata storage
+        smplh_data = dict(smplh_data)
 
     # Handle gender field (can be string or numpy array)
     gender = smplh_data["gender"]
@@ -150,20 +220,59 @@ def load_smplh_file(smplh_file, smplh_body_model_path):
     )
 
     # Reconstruct full poses array for get_joints_verts (N, 156)
-    poses = torch.cat([
+    # Build pose vector - hand poses are optional in AMASS
+    pose_parts = [
         torch.tensor(smplh_data["root_orient"]).float(),
         torch.tensor(smplh_data["pose_body"]).float(),
-        torch.tensor(smplh_data["left_hand_pose"]).float(),
-        torch.tensor(smplh_data["right_hand_pose"]).float(),
-    ], dim=1)
+    ]
 
-    # Get betas - handle both single and batch format
-    betas = torch.tensor(smplh_data["betas"]).float()
-    if betas.ndim == 1:
-        betas = betas.view(1, -1)
+    # Add hand poses if available
+    if "left_hand_pose" in smplh_data and "right_hand_pose" in smplh_data:
+        pose_parts.extend([
+            torch.tensor(smplh_data["left_hand_pose"]).float(),
+            torch.tensor(smplh_data["right_hand_pose"]).float(),
+        ])
+    else:
+        # Use zeros for hand poses if not in data (45 dims = 15 joints × 3)
+        n_frames = smplh_data["root_orient"].shape[0]
+        pose_parts.extend([
+            torch.zeros(n_frames, 45).float(),  # left hand: 15 joints × 3
+            torch.zeros(n_frames, 45).float(),  # right hand: 15 joints × 3
+        ])
+
+    poses = torch.cat(pose_parts, dim=1)
+
+    # Get betas - use fitted shape if provided, otherwise use data betas
+    if fitted_shape_path is not None:
+        fitted_shape, fitted_scale, offset_z, height_scale, fitted_offsets = load_fitted_shape(fitted_shape_path)
+        betas = torch.from_numpy(fitted_shape).float()  # (1, 16)
+        print(f"[load_smplh_file] Using fitted shape from {fitted_shape_path}")
+        print(f"  Fitted scale: {fitted_scale[0]:.4f}, Beta[0]: {betas[0, 0]:.4f}")
+        print(f"  offset_z: {offset_z:.4f} m, height_scale: {height_scale:.4f}")
+    else:
+        betas = torch.tensor(smplh_data["betas"]).float()
+        if betas.ndim == 1:
+            betas = betas.view(1, -1)
+        # Truncate to 16 betas to match model (SMPL-H model created with num_betas=16)
+        if betas.shape[1] > 16:
+            betas = betas[:, :16]
+        offset_z = 0.0
+        height_scale = 1.0
+        fitted_offsets = None
 
     # Get translation
     trans = torch.tensor(smplh_data["trans"]).float()
+
+    # Apply offset_z and height_scale (MuscleMimic-style)
+    if fitted_shape_path is not None:
+        # Apply z-offset first
+        trans[:, 2] += offset_z
+
+        # Apply height scaling (preserve initial height)
+        trans[:, :2] *= height_scale  # Scale x, y
+        trans[:, 2] = (trans[:, 2] - trans[0, 2]) * height_scale + trans[0, 2]  # Scale z preserving initial
+
+        print(f"  Applied offset_z and height_scale to translations")
 
     # IMPORTANT: Repeat betas for each frame to match batch size
     num_frames = poses.shape[0]
@@ -175,6 +284,22 @@ def load_smplh_file(smplh_file, smplh_body_model_path):
         th_betas=betas,
         th_trans=trans,
     )
+
+    # Apply fitted scale directly to joints
+    # This scales the joints to match robot proportions
+    if fitted_shape_path is not None:
+        fitted_scale_val = float(fitted_scale.flat[0]) if isinstance(fitted_scale, np.ndarray) else float(fitted_scale)
+
+        # Apply scale: (joints - pelvis) * scale + pelvis
+        # This preserves root position while scaling all joints relative to pelvis
+        pelvis_pos = joints[:, 0:1, :]  # (N, 1, 3)
+        joints = (joints - pelvis_pos) * fitted_scale_val + pelvis_pos
+        print(f"  Applied fitted scale {fitted_scale_val:.4f} directly to SMPL joints")
+
+        # Store fitted_scale in smplh_data so GMR knows to skip additional scaling
+        smplh_data["fitted_scale"] = fitted_scale_val
+        if 'offsets' not in smplh_data and fitted_offsets is not None:
+            smplh_data['offsets'] = fitted_offsets
 
     # Create output dict similar to smplx output with all necessary attributes
     class SMPLHOutput:
@@ -189,22 +314,41 @@ def load_smplh_file(smplh_file, smplh_body_model_path):
             self.right_hand_pose = right_hand_pose
             self.betas = betas
 
+    # Build hand poses - use from data if available, otherwise use zeros
+    if "left_hand_pose" in smplh_data and "right_hand_pose" in smplh_data:
+        left_hand_pose = torch.tensor(smplh_data["left_hand_pose"]).float()
+        right_hand_pose = torch.tensor(smplh_data["right_hand_pose"]).float()
+    else:
+        n_frames = smplh_data["root_orient"].shape[0]
+        left_hand_pose = torch.zeros(n_frames, 45).float()
+        right_hand_pose = torch.zeros(n_frames, 45).float()
+
     smplh_output = SMPLHOutput(
         vertices=vertices,
         joints=joints,
         full_pose=poses,
         global_orient=torch.tensor(smplh_data["root_orient"]).float(),
         body_pose=torch.tensor(smplh_data["pose_body"]).float(),
-        left_hand_pose=torch.tensor(smplh_data["left_hand_pose"]).float(),
-        right_hand_pose=torch.tensor(smplh_data["right_hand_pose"]).float(),
+        left_hand_pose=left_hand_pose,
+        right_hand_pose=right_hand_pose,
         betas=betas,
     )
 
-    # Height calculation same as SMPL-X (uses betas[0])
-    if len(smplh_data["betas"].shape) == 1:
-        human_height = 1.66 + 0.1 * smplh_data["betas"][0]
+    # Height calculation
+    if fitted_shape_path is not None:
+        # With fitted shape, joints are already correctly scaled
+        # Compute actual height from scaled joints for reference
+        head_idx = 15
+        left_foot_idx = 10
+        right_foot_idx = 11
+        human_height = float(joints[0, head_idx, 2] - min(joints[0, left_foot_idx, 2], joints[0, right_foot_idx, 2]))
+        print(f"  Actual SMPL height after scaling: {human_height:.3f} m")
     else:
-        human_height = 1.66 + 0.1 * smplh_data["betas"][0, 0]
+        # Use beta[0] heuristic for height-based scaling
+        if len(smplh_data["betas"].shape) == 1:
+            human_height = 1.66 + 0.1 * smplh_data["betas"][0]
+        else:
+            human_height = 1.66 + 0.1 * smplh_data["betas"][0, 0]
 
     return smplh_data, body_model, smplh_output, human_height
 
@@ -433,7 +577,6 @@ def get_smplx_data_offline_fast(smplx_data, body_model, smplx_output, tgt_fps=30
 
 
         smplx_data_frames.append(result)
-
     return smplx_data_frames, aligned_fps
 
 
