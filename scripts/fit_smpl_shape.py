@@ -198,59 +198,66 @@ def main():
 
     # Comparison mode
     if args.compare:
-        console.print(f"\n[bold cyan]Step 6: Comparing with height-based scaling[/bold cyan]")
+        console.print(f"\n[bold cyan]Step 6: Comparing with GMR baseline (main branch)[/bold cyan]")
 
-        # Load a sample AMASS motion to get original betas
-        console.print("  Loading sample AMASS data for comparison...")
-
-        # Use example AMASS file if available
+        # Load a sample AMASS motion to get original betas (for reference)
         sample_amass = "/media/data/share/AMASS/CMU/CMU/01/01_01_poses.npz"
         try:
             amass_data = np.load(sample_amass, allow_pickle=True)
             original_betas = amass_data['betas'][:16] if 'betas' in amass_data else np.zeros(16)
         except:
-            console.print("  [yellow]Warning: Could not load sample AMASS data, using zero betas[/yellow]")
             original_betas = np.zeros(16)
 
+        human_scale_table = ik_config.get("human_scale_table", {})
+
+        # GMR baseline: actual_human_height=None means ratio=1.0 (same as main branch default)
         comparison = compare_scaling_methods(
             original_betas,
             shape.cpu().numpy(),
             scale[0].item(),
             str(smpl_model_path),
             ik_config.get("human_height_assumption", 1.8),
+            human_scale_table,
+            actual_human_height=None,  # main branch default
         )
 
         # Display comparison table
         table = Table(title="Scaling Method Comparison")
         table.add_column("Method", style="cyan")
-        table.add_column("SMPL Height\n(unscaled)", justify="right")
-        table.add_column("Final Height\n(scaled)", justify="right")
-        table.add_column("Scale", justify="right")
+        table.add_column("Height Ratio", justify="right")
+        table.add_column("Pelvis Scale\n(effective)", justify="right")
         table.add_column("Beta[0]", justify="right")
 
+        # GMR baseline: ratio=1.0 when actual_human_height=None
+        gmr = comparison['gmr_baseline']
         table.add_row(
-            "Original (Height-based)",
-            f"{comparison['original']['height_unscaled']:.3f}m",
-            f"{comparison['original']['height_scaled']:.3f}m",
-            f"{comparison['original']['scale_ratio']:.4f}",
-            f"{comparison['original']['beta_0']:.4f}",
+            "GMR Baseline",
+            f"{gmr['height_ratio']:.4f}",
+            f"{gmr['pelvis_base_scale']:.2f} × {gmr['height_ratio']:.2f} = {gmr['pelvis_effective_scale']:.4f}",
+            f"{comparison['reference']['original_beta_0']:.4f}",
         )
+        # Fitted: uniform scale applied to all joints
         table.add_row(
-            "Fitted (Data-driven)",
-            f"{comparison['fitted']['height_unscaled']:.3f}m",
-            f"{comparison['fitted']['height_scaled']:.3f}m",
-            f"{comparison['fitted']['scale']:.4f}",
+            "Fitted",
+            f"-",
+            f"{comparison['fitted']['scale']:.4f} (uniform)",
             f"{comparison['fitted']['beta_0']:.4f}",
         )
 
         console.print()
         console.print(table)
+
+        # Show per-body scales from JSON
+        if human_scale_table:
+            console.print()
+            console.print("[bold]GMR JSON per-body scales (ratio=1.0):[/bold]")
+            for body, base_scale in sorted(human_scale_table.items()):
+                console.print(f"  {body}: {base_scale:.2f}")
+
         console.print()
         console.print(f"[bold]Differences:[/bold]")
-        console.print(f"  Unscaled height diff: {abs(comparison['fitted']['height_unscaled'] - comparison['original']['height_unscaled'])*100:.1f} cm")
-        console.print(f"  Final height diff: {comparison['difference']['height_diff_cm']:.1f} cm")
-        console.print(f"  Scale diff: {comparison['difference']['scale_diff']:.4f}")
-        console.print(f"  Shape L2 norm: {comparison['difference']['beta_l2_norm']:.4f}")
+        console.print(f"  Fitted scale vs GMR pelvis: {comparison['difference']['fitted_vs_gmr_pelvis_scale']:.4f}")
+        console.print(f"  Beta L2 norm: {comparison['difference']['beta_l2_norm']:.4f}")
 
     console.print(f"\n[bold green]Done![/bold green] Fitted shape saved to: {save_path}\n")
 

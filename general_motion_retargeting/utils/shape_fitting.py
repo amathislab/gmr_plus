@@ -740,51 +740,55 @@ def compare_scaling_methods(
     fitted_scale: float,
     smplh_model_path: str,
     config_height_assumption: float = 1.8,
+    human_scale_table: Dict[str, float] = None,
+    actual_human_height: float = None,
 ) -> Dict:
     """
-    Compare original height-based scaling vs fitted shape parameters.
+    Compare GMR baseline (main branch) vs fitted shape parameters.
 
-    Args:
-        original_betas: Original shape parameters from mocap
-        fitted_shape: Optimized shape parameters
-        fitted_scale: Optimized global scale
-        smplh_model_path: Path to SMPL-H model (required for computing actual heights)
-        config_height_assumption: Height assumption in IK config
-
-    Returns:
-        Dictionary comparing both methods
+    GMR baseline: if actual_human_height given, ratio = height/assumption; else ratio = 1.0
+    Fitted: optimized betas + uniform scale
     """
-    # Compute ACTUAL heights from SMPL-H model (not heuristic!)
-    original_height_unscaled = compute_smpl_height(original_betas, smplh_model_path)
-    fitted_height_unscaled = compute_smpl_height(fitted_shape[0], smplh_model_path)
+    # Heights from SMPL betas (for reference only)
+    original_height_from_betas = compute_smpl_height(original_betas, smplh_model_path)
+    fitted_height_from_betas = compute_smpl_height(fitted_shape[0], smplh_model_path)
 
-    height_ratio = original_height_unscaled / config_height_assumption
+    # GMR main branch: ratio=1.0 when actual_human_height is None
+    if actual_human_height is not None:
+        height_ratio = actual_human_height / config_height_assumption
+    else:
+        height_ratio = 1.0
 
-    # Compute final effective heights AFTER scaling
-    # Original: uses height-based scaling (not directly applied to joints in old GMR)
-    # Fitted: scale is applied directly to joints (new MuscleMimic-style approach)
-    original_height_scaled = original_height_unscaled  # Not directly scaled, uses ratio in scale_table
-    fitted_height_scaled = fitted_height_unscaled * fitted_scale
+    # Per-body effective scales = base_scale × height_ratio
+    if human_scale_table:
+        pelvis_base_scale = human_scale_table.get("pelvis", 1.0)
+        pelvis_effective_scale = pelvis_base_scale * height_ratio
+        effective_scales = {b: s * height_ratio for b, s in human_scale_table.items()}
+    else:
+        pelvis_base_scale = 1.0
+        pelvis_effective_scale = height_ratio
+        effective_scales = {}
 
     comparison = {
-        "original": {
-            "height_unscaled": float(original_height_unscaled),
-            "height_scaled": float(original_height_scaled),
-            "scale_ratio": float(height_ratio),
-            "beta_0": float(original_betas[0]),
-            "method": "height-based linear scaling",
+        "gmr_baseline": {
+            "actual_human_height": actual_human_height,
+            "height_ratio": float(height_ratio),
+            "pelvis_base_scale": float(pelvis_base_scale),
+            "pelvis_effective_scale": float(pelvis_effective_scale),
+            "effective_scales": effective_scales,
         },
         "fitted": {
-            "height_unscaled": float(fitted_height_unscaled),
-            "height_scaled": float(fitted_height_scaled),
+            "height_from_betas": float(fitted_height_from_betas),
             "scale": float(fitted_scale),
             "beta_0": float(fitted_shape[0, 0]),
             "shape_params": fitted_shape[0].tolist(),
-            "method": "optimized ALL 16 betas + fitted scale",
+        },
+        "reference": {
+            "original_height_from_betas": float(original_height_from_betas),
+            "original_beta_0": float(original_betas[0]),
         },
         "difference": {
-            "height_diff_cm": abs(fitted_height_scaled - original_height_scaled) * 100,
-            "scale_diff": abs(fitted_scale - height_ratio),
+            "fitted_vs_gmr_pelvis_scale": abs(fitted_scale - pelvis_effective_scale),
             "beta_l2_norm": float(np.linalg.norm(fitted_shape[0] - original_betas)),
         }
     }
