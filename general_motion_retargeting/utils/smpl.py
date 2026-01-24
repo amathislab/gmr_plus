@@ -189,7 +189,9 @@ def load_smplh_file(smplh_file, smplh_body_model_path, fitted_shape_path=None):
     smplh_data = np.load(smplh_file, allow_pickle=True)
 
     # Convert AMASS format to standard format if needed
-    if "poses" in smplh_data and "root_orient" not in smplh_data:
+    # Always prioritize 'poses' array when it exists with valid shape (N, 156).
+    # Some datasets (e.g., MOYO) have both 'poses' and separate 'root_orient'/'pose_body'
+    if "poses" in smplh_data and smplh_data["poses"].ndim == 2 and smplh_data["poses"].shape[1] == 156:
         # AMASS SMPL+H format: poses = [root(3), body(63), left_hand(45), right_hand(45)]
         poses = smplh_data["poses"]
         smplh_data = dict(smplh_data)  # Convert to mutable dict
