@@ -22,7 +22,7 @@ ROBOT_XML_DICT = {
     "pnd_adam_lite": ASSET_ROOT / "pnd_adam_lite" / "scene.xml",
     "tienkung": ASSET_ROOT / "tienkung" / "mjcf" / "tienkung.xml",
     "pal_talos": ASSET_ROOT / "pal_talos" / "talos.xml",
-    "myofullbody": ASSET_ROOT / "full_body_model"/ "body" / "myofullbody.xml",
+    "myofullbody": ASSET_ROOT / "musclemimic_models" / "model" / "body" / "myofullbody.xml",
 
 }
 
