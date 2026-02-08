@@ -30,7 +30,6 @@ from general_motion_retargeting.utils.shape_fitting import (
     load_fitted_shape,
     compare_scaling_methods,
     check_torch_availability,
-    compute_alignment_offsets,
 )
 from rich import print
 from rich.table import Table
@@ -115,11 +114,10 @@ def main():
     console.print(f"  IK Config: {ik_config_path}")
 
     console.print(f"\n[bold cyan]Step 2: Extracting robot T-pose targets[/bold cyan]")
-    target_positions, smpl_joint_names, target_rotations, human_joint_names = get_robot_tpose_targets(
+    target_positions, smpl_joint_names = get_robot_tpose_targets(
         robot_xml_path,
         args.robot,
         ik_config,
-        include_rotations=True,
     )
 
     console.print(f"  Found {len(target_positions)} target joints")
@@ -142,46 +140,19 @@ def main():
     console.print(f"  Device: {args.device}\n")
 
     # Fit shape
-    (shape, scale, smpl2robot_pos, smpl2robot_rot_mat,
-     offset_z, height_scale, metrics) = fit_smpl_shape_to_robot(
+    shape, scale, metrics = fit_smpl_shape_to_robot(
         smpl_parser,
         target_positions,
         smpl_joint_indices,
-        target_rotations=target_rotations,  # Pass rotations
         iterations=args.iterations,
         lr=args.lr,
         device=args.device,
         verbose=True,
-        robot_type=args.robot,  # Robot-specific SMPL T-pose rotation
     )
-
-    # Compute LOCAL frame offsets for GMR's offset_human_data() function
-    # This converts global frame offsets to robot-local frame offsets compatible with JSON config format
-    console.print(f"\n[bold cyan]Step 4.5: Computing LOCAL frame offsets for IK compatibility[/bold cyan]")
-    local_offsets = compute_alignment_offsets(
-        smpl_parser,
-        shape,
-        scale,
-        smpl_joint_indices,
-        human_joint_names,
-        target_positions,
-        target_rotations if target_rotations is not None else np.eye(3)[None].repeat(len(target_positions), axis=0),
-        robot_type=args.robot,  # Robot-specific SMPL T-pose rotation
-    )
-    console.print(f"  ✓ Computed LOCAL frame offsets for {len(local_offsets['pos_offsets'])} joints")
 
     # Save results
     console.print(f"\n[bold cyan]Step 5: Saving fitted shape[/bold cyan]")
-    save_fitted_shape(
-        shape, scale,
-        smpl2robot_pos, smpl2robot_rot_mat,
-        offset_z, height_scale,
-        metrics,
-        str(save_path),
-        human_joint_names=human_joint_names,
-        musclemimic_format=True,
-        local_offsets=local_offsets,  # Pass LOCAL offsets for GMR
-    )
+    save_fitted_shape(shape, scale, metrics, str(save_path))
 
     # Print results
     console.print(f"\n[bold green]✓ Shape fitting complete![/bold green]")
@@ -192,72 +163,62 @@ def main():
     console.print(f"  Converged: {'Yes' if metrics['converged'] else 'No'}")
     console.print(f"  Global scale: {scale[0].item():.4f}")
     console.print(f"  Beta[0] (height): {shape[0, 0].item():.4f}")
-    console.print(f"  offset_z: {offset_z:.4f} m")
-    console.print(f"  height_scale: {height_scale:.4f}")
-    console.print(f"  Learned offsets stored for {len(human_joint_names)} joints")
 
     # Comparison mode
     if args.compare:
-        console.print(f"\n[bold cyan]Step 6: Comparing with GMR baseline (main branch)[/bold cyan]")
+        console.print(f"\n[bold cyan]Step 6: Comparing with height-based scaling[/bold cyan]")
 
-        # Load a sample AMASS motion to get original betas (for reference)
+        # Load a sample AMASS motion to get original betas
+        console.print("  Loading sample AMASS data for comparison...")
+
+        # Use example AMASS file if available
         sample_amass = "/media/data/share/AMASS/CMU/CMU/01/01_01_poses.npz"
         try:
             amass_data = np.load(sample_amass, allow_pickle=True)
             original_betas = amass_data['betas'][:16] if 'betas' in amass_data else np.zeros(16)
         except:
+            console.print("  [yellow]Warning: Could not load sample AMASS data, using zero betas[/yellow]")
             original_betas = np.zeros(16)
 
-        human_scale_table = ik_config.get("human_scale_table", {})
-
-        # GMR baseline: actual_human_height=None means ratio=1.0 (same as main branch default)
         comparison = compare_scaling_methods(
             original_betas,
             shape.cpu().numpy(),
             scale[0].item(),
             str(smpl_model_path),
             ik_config.get("human_height_assumption", 1.8),
-            human_scale_table,
-            actual_human_height=None,  # main branch default
         )
 
         # Display comparison table
         table = Table(title="Scaling Method Comparison")
         table.add_column("Method", style="cyan")
-        table.add_column("Height Ratio", justify="right")
-        table.add_column("Pelvis Scale\n(effective)", justify="right")
+        table.add_column("SMPL Height\n(unscaled)", justify="right")
+        table.add_column("Final Height\n(scaled)", justify="right")
+        table.add_column("Scale", justify="right")
         table.add_column("Beta[0]", justify="right")
 
-        # GMR baseline: ratio=1.0 when actual_human_height=None
-        gmr = comparison['gmr_baseline']
         table.add_row(
-            "GMR Baseline",
-            f"{gmr['height_ratio']:.4f}",
-            f"{gmr['pelvis_base_scale']:.2f} × {gmr['height_ratio']:.2f} = {gmr['pelvis_effective_scale']:.4f}",
-            f"{comparison['reference']['original_beta_0']:.4f}",
+            "Original (Height-based)",
+            f"{comparison['original']['height_unscaled']:.3f}m",
+            f"{comparison['original']['height_scaled']:.3f}m",
+            f"{comparison['original']['scale_ratio']:.4f}",
+            f"{comparison['original']['beta_0']:.4f}",
         )
-        # Fitted: uniform scale applied to all joints
         table.add_row(
-            "Fitted",
-            f"-",
-            f"{comparison['fitted']['scale']:.4f} (uniform)",
+            "Fitted (Data-driven)",
+            f"{comparison['fitted']['height_unscaled']:.3f}m",
+            f"{comparison['fitted']['height_scaled']:.3f}m",
+            f"{comparison['fitted']['scale']:.4f}",
             f"{comparison['fitted']['beta_0']:.4f}",
         )
 
         console.print()
         console.print(table)
-
-        # Show per-body scales from JSON
-        if human_scale_table:
-            console.print()
-            console.print("[bold]GMR JSON per-body scales (ratio=1.0):[/bold]")
-            for body, base_scale in sorted(human_scale_table.items()):
-                console.print(f"  {body}: {base_scale:.2f}")
-
         console.print()
         console.print(f"[bold]Differences:[/bold]")
-        console.print(f"  Fitted scale vs GMR pelvis: {comparison['difference']['fitted_vs_gmr_pelvis_scale']:.4f}")
-        console.print(f"  Beta L2 norm: {comparison['difference']['beta_l2_norm']:.4f}")
+        console.print(f"  Unscaled height diff: {abs(comparison['fitted']['height_unscaled'] - comparison['original']['height_unscaled'])*100:.1f} cm")
+        console.print(f"  Final height diff: {comparison['difference']['height_diff_cm']:.1f} cm")
+        console.print(f"  Scale diff: {comparison['difference']['scale_diff']:.4f}")
+        console.print(f"  Shape L2 norm: {comparison['difference']['beta_l2_norm']:.4f}")
 
     console.print(f"\n[bold green]Done![/bold green] Fitted shape saved to: {save_path}\n")
 

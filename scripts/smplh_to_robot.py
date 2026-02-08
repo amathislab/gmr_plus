@@ -66,6 +66,13 @@ if __name__ == "__main__":
         help="Path to fitted shape parameters (.pkl). Auto-detects if available for the robot.",
     )
 
+    parser.add_argument(
+        "--fitted_shape",
+        type=str,
+        default=None,
+        help="Path to fitted shape parameters (.pkl). Auto-detects if available for the robot.",
+    )
+
     args = parser.parse_args()
 
     # Use local SMPL-H body models in assets folder
@@ -102,7 +109,6 @@ if __name__ == "__main__":
         src_human="smplh",
         tgt_robot=args.robot,
         use_fitted_shape=(fitted_shape_path is not None),
-        fitted_shape_path=fitted_shape_path,
     )
 
     robot_motion_viewer = RobotMotionViewer(robot_type=args.robot,
