@@ -2,7 +2,7 @@
     "robot_root_name": "pelvis",
     "human_root_name": "pelvis",
     "ground_height": 0.0,
-    "human_height_assumption": 1.8,
+    "human_height_assumption": 1.6,
     "human_scale_table": {
         "pelvis": 1,
         "spine1": 1,
