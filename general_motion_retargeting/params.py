@@ -1,4 +1,5 @@
 import pathlib
+from musclemimic_models import get_xml_path
 
 HERE = pathlib.Path(__file__).parent
 IK_CONFIG_ROOT = HERE / "ik_configs"
@@ -22,7 +23,7 @@ ROBOT_XML_DICT = {
     "pnd_adam_lite": ASSET_ROOT / "pnd_adam_lite" / "scene.xml",
     "tienkung": ASSET_ROOT / "tienkung" / "mjcf" / "tienkung.xml",
     "pal_talos": ASSET_ROOT / "pal_talos" / "talos.xml",
-    "myofullbody": ASSET_ROOT / "musclemimic_models" / "model" / "body" / "myofullbody.xml",
+    "myofullbody": get_xml_path("myofullbody"),
 
 }
 

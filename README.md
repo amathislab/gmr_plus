@@ -459,8 +459,6 @@ The fitted shape approach:
 GMR now supports retargeting with MyoFullbody with fitted shape approach and json configuration with smplx. 
 
 ```bash
-uv pip install --target assets musclemimic_models
-
 MUJOCO_GL=egl uv run scripts/smplh_to_robot.py \
     --smplh_file <path_to_amass.npz> \
     --robot myofullbody \
