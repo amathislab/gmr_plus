@@ -425,7 +425,7 @@ Once fitted, the shape is automatically used for SMPL-H retargeting if it exists
 
 ```bash
 # SMPL-H to robot with auto-detected fitted shape
-MUJOCO_GL=egl python scripts/smplh_to_robot.py \
+MUJOCO_GL=egl uv run scripts/smplh_to_robot.py \
     --smplh_file <path_to_amass.npz> \
     --robot unitree_g1 \
     --save_path output.pkl \
@@ -433,14 +433,14 @@ MUJOCO_GL=egl python scripts/smplh_to_robot.py \
     --video_path output.mp4
 
 # Explicitly specify fitted shape path
-MUJOCO_GL=egl python scripts/smplh_to_robot.py \
+MUJOCO_GL=egl uv run scripts/smplh_to_robot.py \
     --smplh_file <path_to_amass.npz> \
     --robot unitree_g1 \
     --fitted_shape assets/fitted_shapes/unitree_g1_shape.pkl \
     --save_path output.pkl
 
 # Disable fitted shape (use height-based scaling)
-MUJOCO_GL=egl python scripts/smplh_to_robot.py \
+MUJOCO_GL=egl uv run scripts/smplh_to_robot.py \
     --smplh_file <path_to_amass.npz> \
     --robot unitree_g1 \
     --fitted_shape "" \
@@ -452,6 +452,27 @@ The fitted shape approach:
 - Applies uniform scale directly to SMPL joints (bypasses per-body-part heuristics)
 - Achieves ~70% better T-pose accuracy while maintaining similar dynamic motion quality
 - Produces joint angle differences typically <0.5° (median ~0.2°)
+
+
+**Using MyoFullBody with GMR:**
+
+GMR now supports retargeting with MyoFullbody with fitted shape approach and json configuration with smplx. 
+
+```bash
+MUJOCO_GL=egl uv run scripts/smplh_to_robot.py \
+    --smplh_file <path_to_amass.npz> \
+    --robot myofullbody \
+    --save_path output.pkl \
+    --record_video \
+    --video_path output.mp4
+
+MUJOCO_GL=egl uv run scripts/smplx_to_robot.py \
+    --smplx_file <path_to_amass.npz> \
+    --robot myofullbody \
+    --save_path output.pkl \
+    --record_video \
+    --video_path output.mp4
+```
 
 
 ## Speed Benchmark
