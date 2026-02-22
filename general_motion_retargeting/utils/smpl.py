@@ -1,6 +1,8 @@
 import numpy as np
 import smplx
 import torch
+import pickle
+import os
 from torch.nn import functional as F
 from scipy.spatial.transform import Rotation as R
 from smplx.joint_names import JOINT_NAMES
@@ -146,10 +148,14 @@ def load_smplx_file(smplx_file, smplx_body_model_path):
     # print(smplx_data["betas"].shape)
     # print(smplx_data["root_orient"].shape)
     # print(smplx_data["trans"].shape)
+
+    betas = torch.tensor(smplx_data["betas"]).float().view(1, -1)
+    betas = betas[..., :body_model.num_betas]
+
     
     num_frames = smplx_data["pose_body"].shape[0]
     smplx_output = body_model(
-        betas=torch.tensor(smplx_data["betas"]).float().view(1, -1), # (16,)
+        betas=betas, # (16,)
         global_orient=torch.tensor(smplx_data["root_orient"]).float(), # (N, 3)
         body_pose=torch.tensor(smplx_data["pose_body"]).float(), # (N, 63)
         transl=torch.tensor(smplx_data["trans"]).float(), # (N, 3)
@@ -168,6 +174,301 @@ def load_smplx_file(smplx_file, smplx_body_model_path):
         human_height = 1.66 + 0.1 * smplx_data["betas"][0, 0]
     
     return smplx_data, body_model, smplx_output, human_height
+
+
+def load_smplx_files_meta(folder_path, smplx_body_model_path, gender="neutral"):
+    """
+    Load SMPL-X data from a folder that contains subfolders like:
+        smplx_mesh_betas/
+        smplx_mesh_body_pose/
+        smplx_mesh_global_orient/
+        smplx_mesh_left_hand_pose/
+        smplx_mesh_right_hand_pose/
+        smplx_mesh_transl/
+
+    and return the same outputs as `load_smplx_file`:
+        smplx_data, body_model, smplx_output, human_height
+    """
+
+    # Map subfolder names -> keys you used in npz version
+    folder_map = {
+        "smplx_mesh_betas": "betas",
+        "smplx_mesh_body_pose": "pose_body",
+        "smplx_mesh_global_orient": "root_orient",
+        "smplx_mesh_transl": "trans",
+        "smplx_mesh_left_hand_pose": "left_hand_pose",
+        "smplx_mesh_right_hand_pose": "right_hand_pose",
+    }
+
+    smplx_data = {}
+
+    def _load_and_concat(subdir):
+        """Load all .npy files in a subdir and concat along time."""
+        arrays = []
+        for f in sorted(os.listdir(subdir)):
+            if f.endswith(".npy"):
+                arrays.append(np.load(os.path.join(subdir, f)))
+        if not arrays:
+            return None
+        return arrays[0] if len(arrays) == 1 else np.concatenate(arrays, axis=0)
+
+    # Load each attribute from its folder
+    for subfolder, key in folder_map.items():
+        path = os.path.join(folder_path, subfolder)
+        if os.path.isdir(path):
+            arr = _load_and_concat(path)
+            if arr is not None:
+                smplx_data[key] = arr
+
+    # Basic sanity: pose_body must exist
+    if "pose_body" not in smplx_data:
+        raise ValueError(f"Could not find pose_body (smplx_mesh_body_pose) in {folder_path}")
+
+    num_frames = smplx_data["pose_body"].shape[0]
+
+    # If hands are missing, fill with zeros like your original function
+    if "left_hand_pose" not in smplx_data:
+        smplx_data["left_hand_pose"] = np.zeros((num_frames, 45), dtype=np.float32)
+    if "right_hand_pose" not in smplx_data:
+        smplx_data["right_hand_pose"] = np.zeros((num_frames, 45), dtype=np.float32)
+
+    # Betas: if missing or per-frame, fall back to first frame
+    if "betas" not in smplx_data:
+        raise ValueError(f"Could not find betas (smplx_mesh_betas) in {folder_path}")
+    betas = smplx_data["betas"]
+    if betas.ndim > 1:
+        # assume (T, n_betas) or (1, n_betas); use first row
+        betas_single = betas[0]
+    else:
+        betas_single = betas
+    smplx_data["betas"] = betas_single
+
+    # Gender (no file, so we pass it in)
+    smplx_data["gender"] = gender
+    smplx_data["mocap_frame_rate"] = torch.tensor(30)
+    smplx_data["trans"] = smplx_data["trans"][..., [2, 1, 0]]
+    root_orient = smplx_data["root_orient"]      # shape (T, 3), axis-angle
+
+    R_orig = R.from_rotvec(root_orient)          # (T,)
+    R_fix = R.from_matrix(np.array([
+        [0, 0, 1],    # new X = old Z (forward)
+        [1, 0, 0],   # new Y = -old X (left)
+        [0, 1, 0],    # new Z = old Y (up)
+    ]))
+
+    R_new = R_fix * R_orig
+    smplx_data["root_orient"] = R_new.as_rotvec()
+
+    # Create SMPL-X model
+    body_model = smplx.create(
+        smplx_body_model_path,
+        model_type="smplx",
+        gender=str(gender),
+        use_pca=False,
+        num_betas=300, 
+    )
+
+    smplx_output = body_model(
+        betas=torch.tensor(smplx_data["betas"]).float().view(1, -1),
+        global_orient=torch.tensor(smplx_data["root_orient"]).float(),   # (N, 3)
+        body_pose=torch.tensor(smplx_data["pose_body"]).float(),        # (N, 63)
+        transl=torch.tensor(smplx_data["trans"]).float(),               # (N, 3)
+        left_hand_pose=torch.tensor(smplx_data["left_hand_pose"]).float(),
+        right_hand_pose=torch.tensor(smplx_data["right_hand_pose"]).float(),
+        jaw_pose=torch.zeros(num_frames, 3).float(),
+        leye_pose=torch.zeros(num_frames, 3).float(),
+        reye_pose=torch.zeros(num_frames, 3).float(),
+        return_full_pose=True,
+    )
+
+    if smplx_data["betas"].ndim == 1:
+        human_height = 1.66 + 0.1 * smplx_data["betas"][0]
+    else:
+        human_height = 1.66 + 0.1 * smplx_data["betas"][0, 0]
+
+    return smplx_data, body_model, smplx_output, human_height
+
+def smplx_to_smplh_params(smplx_params):
+    """
+    Convert SMPL-X parameter vectors to SMPL-H by
+    removing face/expression dims.
+    
+    Args:
+        smplx_params: dict or numpy array with keys/fields:
+            - betas (shape)
+            - body_pose
+            - global_orient
+            - left_hand_pose, right_hand_pose
+            - expression, jaw_pose, eye_poses (present for SMPL-X)
+    Returns:
+        smplh_params: dict with SMPL-H compatible parameter arrays
+    """
+    smplh = {}
+    smplh["betas"] = smplx_params["betas"]  # shape
+    smplh["root_orient"] = smplx_params["root_orient"]
+    smplh["pose_body"] = smplx_params["pose_body"]
+    smplh["left_hand_pose"] = smplx_params["left_hand_pose"]
+    smplh["right_hand_pose"] = smplx_params["right_hand_pose"]
+    # translate if present
+    if "transl" in smplx_params:
+        smplh["transl"] = smplx_params["transl"]
+    return smplh
+
+def load_smplh_files_meta(
+    folder_path,
+    smplh_body_model_path,
+    gender="neutral",
+    fitted_shape_path=None,
+):
+    """
+    Load SMPL-H motion stored as per-attribute folders and return the same outputs
+    as load_smplh_file.
+
+    Expected subfolders:
+      smplx_mesh_betas/
+      smplx_mesh_body_pose/
+      smplx_mesh_global_orient/
+      smplx_mesh_transl/
+      smplx_mesh_left_hand_pose/      (optional)
+      smplx_mesh_right_hand_pose/     (optional)
+    """
+
+    #meta embody3d uses smplx format, in which we load and then convert later
+    folder_map = {
+        "smplx_mesh_betas": "betas",
+        "smplx_mesh_body_pose": "pose_body",
+        "smplx_mesh_global_orient": "root_orient",
+        "smplx_mesh_transl": "transl",
+        "smplx_mesh_left_hand_pose": "left_hand_pose",
+        "smplx_mesh_right_hand_pose": "right_hand_pose",
+    }
+
+    smplx_data = {}
+
+    def _load_and_concat(subdir):
+        arrays = []
+        for f in sorted(os.listdir(subdir)):
+            if f.endswith(".npy"):
+                arrays.append(np.load(os.path.join(subdir, f)))
+        if not arrays:
+            return None
+        return arrays[0] if len(arrays) == 1 else np.concatenate(arrays, axis=0)
+
+
+    for subfolder, key in folder_map.items():
+        path = os.path.join(folder_path, subfolder)
+        if os.path.isdir(path):
+            arr = _load_and_concat(path)
+            if arr is not None:
+                smplx_data[key] = arr
+    
+    smplh_data = smplx_to_smplh_params(smplx_data)
+
+    if "pose_body" not in smplh_data:
+        raise ValueError(f"Missing smplh_mesh_body_pose in {folder_path}")
+    if "root_orient" not in smplh_data:
+        raise ValueError(f"Missing smplh_mesh_global_orient in {folder_path}")
+    if "transl" not in smplh_data:
+        raise ValueError(f"Missing smplh_mesh_transl in {folder_path}")
+    if "betas" not in smplh_data:
+        raise ValueError(f"Missing smplh_mesh_betas in {folder_path}")
+
+    num_frames = smplh_data["pose_body"].shape[0]
+
+
+    if "left_hand_pose" not in smplh_data:
+        smplh_data["left_hand_pose"] = np.zeros((num_frames, 45), dtype=np.float32)
+    if "right_hand_pose" not in smplh_data:
+        smplh_data["right_hand_pose"] = np.zeros((num_frames, 45), dtype=np.float32)
+
+
+    betas = smplh_data["betas"]
+    if betas.ndim > 1:
+        betas = betas[0]
+    smplh_data["betas"] = betas
+
+    smplh_data["gender"] = str(gender)
+    smplh_data["mocap_frame_rate"] = torch.tensor(30)
+
+
+    pose_parts = [
+        torch.tensor(smplh_data["root_orient"]).float(),
+        torch.tensor(smplh_data["pose_body"]).float(),
+        torch.tensor(smplh_data["left_hand_pose"]).float(),
+        torch.tensor(smplh_data["right_hand_pose"]).float(),
+    ]
+    poses = torch.cat(pose_parts, dim=1)
+    trans = torch.tensor(smplh_data["transl"]).float()
+    betas_torch = torch.tensor(betas).float().view(1, -1).repeat(num_frames, 1)
+
+
+    body_model = SMPLH_Parser(
+        model_path=smplh_body_model_path,
+        gender="neutral",
+        use_pca=False,
+    )
+
+
+    vertices, joints = body_model.get_joints_verts(
+        pose=poses,
+        th_betas=betas_torch,
+        th_trans=trans,
+    )
+
+
+    if fitted_shape_path is not None:
+        fitted_shape, fitted_scale, fitted_metrics = load_fitted_shape(fitted_shape_path)
+        fitted_scale_val = float(np.asarray(fitted_scale).flat[0])
+
+        pelvis = joints[:, 0:1, :]
+        joints = (joints - pelvis) * fitted_scale_val + pelvis
+        smplh_data["fitted_scale"] = fitted_scale_val
+
+
+    class SMPLHOutput:
+        def __init__(
+            self,
+            vertices,
+            joints,
+            full_pose,
+            global_orient,
+            body_pose,
+            left_hand_pose,
+            right_hand_pose,
+            betas,
+        ):
+            self.vertices = vertices
+            self.joints = joints
+            self.full_pose = full_pose
+            self.global_orient = global_orient
+            self.body_pose = body_pose
+            self.left_hand_pose = left_hand_pose
+            self.right_hand_pose = right_hand_pose
+            self.betas = betas
+
+    smplh_output = SMPLHOutput(
+        vertices=vertices,
+        joints=joints,
+        full_pose=poses,
+        global_orient=torch.tensor(smplh_data["root_orient"]).float(),
+        body_pose=torch.tensor(smplh_data["pose_body"]).float(),
+        left_hand_pose=torch.tensor(smplh_data["left_hand_pose"]).float(),
+        right_hand_pose=torch.tensor(smplh_data["right_hand_pose"]).float(),
+        betas=betas_torch,
+    )
+
+    if fitted_shape_path is not None:
+        head_idx = 15
+        left_foot_idx = 10
+        right_foot_idx = 11
+        human_height = float(
+            joints[0, head_idx, 2]
+            - min(joints[0, left_foot_idx, 2], joints[0, right_foot_idx, 2])
+        )
+    else:
+        human_height = 1.66 + 0.1 * betas[0]
+
+    return smplh_data, body_model, smplh_output, human_height
 
 
 def load_smplh_file(smplh_file, smplh_body_model_path, fitted_shape_path=None):
@@ -354,6 +655,166 @@ def load_smplh_file(smplh_file, smplh_body_model_path, fitted_shape_path=None):
 
     return smplh_data, body_model, smplh_output, human_height
 
+
+def load_smpl_carepd(
+    pkl_file,
+    smplh_body_model_path,
+    subject_id=None,
+    walk_id=None,
+    fitted_shape_path=None,
+):
+    with open(pkl_file, "rb") as f:
+        data = pickle.load(f)
+
+    if subject_id is None:
+        subject_id = list(data.keys())[0]
+    if walk_id is None:
+        walk_id = list(data[subject_id].keys())[0]
+
+    raw_data = data[subject_id][walk_id]
+
+    pose = raw_data["pose"]        # (T, 72)
+    trans = raw_data["trans"]      # (T, 3)
+    betas_np = raw_data["beta"]    # (1, 10)
+
+    T = pose.shape[0]
+
+    global_orient = pose[:, :3].copy()  # (T, 3) axis-angle
+    body_pose = pose[:, 3:66].copy()    # (T, 63) axis-angle
+
+    trans = trans.copy()
+    trans = trans[..., [1, 0, 2]]
+
+    R_orig = R.from_rotvec(global_orient)  # (T,)
+    R_fix = R.from_matrix(np.array([
+        [0, 0, 1],  # new X = old Z (forward)
+        [1, 0, 0],  # new Y = -old X (left)   (kept EXACT as your snippet)
+        [0, 1, 0],  # new Z = old Y (up)
+    ], dtype=np.float64))
+    R_new = R_fix * R_orig
+    global_orient = R_new.as_rotvec().astype(np.float32)
+    # ---------------------------------------------
+
+    left_hand_pose = np.zeros((T, 45), dtype=np.float32)
+    right_hand_pose = np.zeros((T, 45), dtype=np.float32)
+
+    full_pose = np.concatenate(
+        [global_orient, body_pose, left_hand_pose, right_hand_pose],
+        axis=1,
+    ).astype(np.float32)
+
+
+    body_model = SMPLH_Parser(
+        model_path=smplh_body_model_path,
+        gender="neutral",
+        use_pca=False,
+        num_betas=16,
+    )
+
+    poses_torch = torch.tensor(full_pose).float()
+    trans_torch = torch.tensor(trans).float()
+
+
+    offset_z = 0.0
+    height_scale = 1.0
+    fitted_offsets = None
+
+    if fitted_shape_path is not None:
+        fitted_shape, fitted_scale, offset_z, height_scale, fitted_offsets = \
+            load_fitted_shape(fitted_shape_path)
+
+        betas = torch.from_numpy(fitted_shape).float()  # (1,16)
+        print(f"[BMCLab Loader] Using fitted shape from {fitted_shape_path}")
+    else:
+        betas = torch.tensor(betas_np).float()
+        if betas.ndim == 1:
+            betas = betas.view(1, -1)
+
+        # match to 16
+        if betas.shape[1] < 16:
+            padded = torch.zeros(1, 16)
+            padded[:, :betas.shape[1]] = betas
+            betas = padded
+        elif betas.shape[1] > 16:
+            betas = betas[:, :16]
+
+        print("[BMCLab Loader] Using betas from BMCLab PKL.")
+
+    betas = betas.repeat(T, 1)
+
+    vertices, joints = body_model.get_joints_verts(
+        pose=poses_torch,
+        th_betas=betas,
+        th_trans=trans_torch,
+    )
+
+    # Use the same indices you're already using for feet
+    left_foot_idx = 10
+    right_foot_idx = 11
+
+    # Estimate lowest foot height across the sequence (Z-up)
+    feet_z = torch.min(joints[:, left_foot_idx, 2], joints[:, right_foot_idx, 2])  # (T,)
+    z_min = float(feet_z.min().detach().cpu().item())
+
+    # Shift up so the lowest foot touches the ground (add a tiny epsilon)
+    eps = 0.002  # 2mm so it doesn't scrape
+    z_shift = -(z_min - 0.0) + eps  # if z_min is negative, this shifts upward
+
+    # Apply shift to translation
+    trans_torch = trans_torch.clone()
+    trans_torch[:, 2] += z_shift
+    trans = trans.copy()
+    trans[:, 2] += z_shift
+
+    # Re-run forward pass so vertices/joints match the corrected trans
+    vertices, joints = body_model.get_joints_verts(
+        pose=poses_torch,
+        th_betas=betas,
+        th_trans=trans_torch,
+    )
+
+    print(f"[BMCLab Loader] Ground align: z_min(feet)={z_min:.4f} -> shift {z_shift:.4f}")
+
+    smplh_data = {}
+    smplh_data["pose_body"] = body_pose.astype(np.float32)
+    smplh_data["global_orient"] = global_orient.astype(np.float32)
+    smplh_data["trans"] = trans.astype(np.float32)
+    smplh_data["betas"] = betas[:1].detach().cpu().numpy()
+    smplh_data["mocap_frame_rate"] = np.array(raw_data["fps"], dtype=np.int32)
+
+
+    class SMPLHOutput:
+        def __init__(self):
+            self.vertices = vertices
+            self.joints = joints
+            self.full_pose = poses_torch
+            self.global_orient = torch.tensor(global_orient).float()
+            self.body_pose = torch.tensor(body_pose).float()
+            self.left_hand_pose = torch.zeros(T, 45).float()
+            self.right_hand_pose = torch.zeros(T, 45).float()
+            self.betas = betas
+            self.offset_z = offset_z
+            self.height_scale = height_scale
+            self.fitted_offsets = fitted_offsets
+
+    smplh_output = SMPLHOutput()
+
+
+    head_idx = 15
+    left_foot_idx = 10
+    right_foot_idx = 11
+
+    human_height = float(
+        joints[0, head_idx, 2]
+        - min(joints[0, left_foot_idx, 2], joints[0, right_foot_idx, 2])
+    )
+
+    print(f"[BMCLab Loader]")
+    print(f"  Frames: {T}")
+    print(f"  FPS: {raw_data['fps']}")
+    print(f"  Estimated height: {human_height:.3f} m")
+
+    return smplh_data, body_model, smplh_output, human_height
 
 def load_gvhmr_pred_file(gvhmr_pred_file, smplx_body_model_path):
     gvhmr_pred = torch.load(gvhmr_pred_file)
