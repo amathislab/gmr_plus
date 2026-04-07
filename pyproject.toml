@@ -48,4 +48,4 @@ url = "https://pypi.org/simple"
 packages = {find = {}}
 
 [tool.uv.sources]
-smplx = { git = "https://github.com/ZhengyiLuo/smplx" }
+smplx = { git = "https://github.com/amathislab/smplx" }
