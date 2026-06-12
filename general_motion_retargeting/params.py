@@ -79,6 +79,9 @@ IK_CONFIG_DICT = {
     "bvh_nokov":{
         "unitree_g1": IK_CONFIG_ROOT / "bvh_nokov_to_g1.json",
     },
+    "bvh_soma":{
+        "myofullbody": IK_CONFIG_ROOT / "bvh_soma_to_myofullbody.json",
+    },
     "fbx":{
         "unitree_g1": IK_CONFIG_ROOT / "fbx_to_g1.json",
         "unitree_g1_with_hands": IK_CONFIG_ROOT / "fbx_to_g1.json",
