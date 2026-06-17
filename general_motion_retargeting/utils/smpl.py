@@ -295,8 +295,9 @@ def load_smplh_file(smplh_file, smplh_body_model_path, fitted_shape_path=None):
         # Apply scale: (joints - pelvis) * scale + pelvis
         # This preserves root position while scaling all joints relative to pelvis
         pelvis_pos = joints[:, 0:1, :]  # (N, 1, 3)
+        vertices = (vertices - pelvis_pos) * fitted_scale_val + pelvis_pos
         joints = (joints - pelvis_pos) * fitted_scale_val + pelvis_pos
-        print(f"  Applied fitted scale {fitted_scale_val:.4f} directly to SMPL joints")
+        print(f"  Applied fitted scale {fitted_scale_val:.4f} directly to SMPL joints and vertices")
 
         # Store fitted_scale in smplh_data so GMR knows to skip additional scaling
         smplh_data["fitted_scale"] = fitted_scale_val
@@ -338,13 +339,27 @@ def load_smplh_file(smplh_file, smplh_body_model_path, fitted_shape_path=None):
 
     # Height calculation
     if fitted_shape_path is not None:
-        # With fitted shape, joints are already correctly scaled
-        # Compute actual height from scaled joints for reference
         head_idx = 15
         left_foot_idx = 10
         right_foot_idx = 11
-        human_height = float(joints[0, head_idx, 2] - min(joints[0, left_foot_idx, 2], joints[0, right_foot_idx, 2]))
-        print(f"  Actual SMPL height after scaling: {human_height:.3f} m")
+        first_frame_joint_span = float(
+            joints[0, head_idx, 2]
+            - min(joints[0, left_foot_idx, 2], joints[0, right_foot_idx, 2])
+        )
+
+        tpose = torch.zeros((1, 156), dtype=betas.dtype, device=betas.device)
+        root_rot = R.from_euler('xyz', [np.pi / 2, 0.0, 0.0], degrees=False).as_rotvec()
+        tpose[:, :3] = torch.tensor(root_rot, dtype=betas.dtype, device=betas.device)
+        tpose_vertices, tpose_joints = body_model.get_joints_verts(
+            pose=tpose,
+            th_betas=betas[:1],
+            th_trans=torch.zeros((1, 3), dtype=betas.dtype, device=betas.device),
+        )
+        tpose_pelvis = tpose_joints[:, 0:1, :]
+        tpose_vertices = (tpose_vertices - tpose_pelvis) * fitted_scale_val + tpose_pelvis
+        human_height = float(tpose_vertices[0, :, 2].max() - tpose_vertices[0, :, 2].min())
+        print(f"  Fitted SMPL T-pose mesh height after scaling: {human_height:.3f} m")
+        print(f"  First-frame head-foot joint span: {first_frame_joint_span:.3f} m")
     else:
         # Use beta[0] heuristic for height-based scaling
         if len(smplh_data["betas"].shape) == 1:
