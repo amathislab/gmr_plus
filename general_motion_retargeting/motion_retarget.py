@@ -152,11 +152,17 @@ class GeneralMotionRetargeting:
     def _add_equality_tasks(self, cur_task):
         model = self.configuration.model
 
-        for eq_id in range(model.neq):
-            if model.eq_type[eq_id] == mj.mjtEq.mjEQ_JOINT:
-                task = EqualityConstraintTask(model, eq_id)
-                task.weight = 5.0
-                cur_task.append(task)
+        joint_eq_ids = [
+            eq_id
+            for eq_id in range(model.neq)
+            if model.eq_type[eq_id] == mj.mjtEq.mjEQ_JOINT
+        ]
+        if not joint_eq_ids:
+            return
+
+        eq_cost = np.zeros(model.neq)
+        eq_cost[joint_eq_ids] = 5.0
+        cur_task.append(EqualityConstraintTask(model, cost=eq_cost))
 
     def setup_retarget_configuration(self):
         self.configuration = mink.Configuration(self.model)
