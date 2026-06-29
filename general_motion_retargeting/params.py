@@ -1,11 +1,17 @@
 import pathlib
-from musclemimic_models import get_xml_path
 
 HERE = pathlib.Path(__file__).parent
 IK_CONFIG_ROOT = HERE / "ik_configs"
 ASSET_ROOT = HERE / ".." / "assets"
 
-ROBOT_XML_DICT = {
+
+def get_myo_sim_model(name: str):
+    from myo_sim.build.compose import build_model
+
+    return build_model(name)
+
+
+ROBOT_MODEL_DICT = {
     "unitree_g1": ASSET_ROOT / "unitree_g1" / "g1_mocap_29dof.xml",
     "unitree_g1_with_hands": ASSET_ROOT / "unitree_g1" / "g1_mocap_29dof_with_hands.xml",
     "unitree_h1": ASSET_ROOT / "unitree_h1" / "h1.xml",
@@ -23,9 +29,25 @@ ROBOT_XML_DICT = {
     "pnd_adam_lite": ASSET_ROOT / "pnd_adam_lite" / "scene.xml",
     "tienkung": ASSET_ROOT / "tienkung" / "mjcf" / "tienkung.xml",
     "pal_talos": ASSET_ROOT / "pal_talos" / "talos.xml",
-    "myofullbody": get_xml_path("myofullbody"),
-
+    "myofullbody": get_myo_sim_model("myofullbody"),
 }
+
+ROBOT_XML_DICT = {
+    robot_name: robot_model
+    for robot_name, robot_model in ROBOT_MODEL_DICT.items()
+    if isinstance(robot_model, pathlib.Path)
+}
+
+
+def get_robot_model(tgt_robot: str):
+    robot_model = ROBOT_MODEL_DICT[tgt_robot]
+    if not isinstance(robot_model, pathlib.Path):
+        return robot_model
+
+    import mujoco as mj
+
+    xml_path = robot_model
+    return mj.MjModel.from_xml_path(str(xml_path))
 
 IK_CONFIG_DICT = {
     # offline data
