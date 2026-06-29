@@ -131,7 +131,7 @@ def set_robot_to_tpose(
 
 
 def get_robot_tpose_targets(
-    robot_xml_path: str,
+    robot_model_or_path,
     robot_type: str,
     ik_config: Dict,
     include_rotations: bool = False,
@@ -140,7 +140,7 @@ def get_robot_tpose_targets(
     Extract target joint positions from robot in T-pose.
 
     Args:
-        robot_xml_path: Path to robot MuJoCo XML
+        robot_model_or_path: Robot MuJoCo model or path to robot MuJoCo XML
         robot_type: Robot type (e.g., 'unitree_g1')
         ik_config: IK configuration with site-to-joint mappings
 
@@ -149,7 +149,10 @@ def get_robot_tpose_targets(
         smpl_joint_names: List of corresponding SMPL-H joint names
     """
     # Load robot model
-    model = mj.MjModel.from_xml_path(robot_xml_path)
+    if isinstance(robot_model_or_path, mj.MjModel):
+        model = robot_model_or_path
+    else:
+        model = mj.MjModel.from_xml_path(str(robot_model_or_path))
     data = mj.MjData(model)
 
     # Set robot to T-pose

@@ -1,7 +1,6 @@
 import argparse
 import pathlib
 import os
-import mujoco as mj
 import numpy as np
 from tqdm import tqdm
 import torch
@@ -86,8 +85,6 @@ if __name__ == "__main__":
                 tgt_robot=args.robot,
                 actual_human_height=actual_human_height,
             )
-            model = mj.MjModel.from_xml_path(retarget.xml_file)
-            data = mj.MjData(model)
 
             
 

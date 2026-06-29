@@ -20,7 +20,7 @@ import pathlib
 import json
 import numpy as np
 
-from general_motion_retargeting import ROBOT_XML_DICT, IK_CONFIG_DICT
+from general_motion_retargeting import ROBOT_XML_DICT, ROBOT_MODEL_DICT, IK_CONFIG_DICT, get_robot_model
 from general_motion_retargeting.utils.smpl import SMPLH_Parser
 from general_motion_retargeting.utils.shape_fitting import (
     get_robot_tpose_targets,
@@ -47,7 +47,7 @@ def main():
         "--robot",
         type=str,
         required=True,
-        choices=list(ROBOT_XML_DICT.keys()),
+        choices=list(ROBOT_MODEL_DICT.keys()),
         help="Robot type to fit",
     )
     parser.add_argument(
@@ -104,19 +104,20 @@ def main():
     console.print(f"\n[bold cyan]Step 1: Loading robot and IK configuration[/bold cyan]")
     console.print(f"  Robot: [green]{args.robot}[/green]")
 
-    # Load robot XML and IK config (use SMPL-H configs for shape fitting)
-    robot_xml_path = str(ROBOT_XML_DICT[args.robot])
+    # Load robot model and IK config (use SMPL-H configs for shape fitting)
+    robot_model = get_robot_model(args.robot)
+    robot_model_source = ROBOT_MODEL_DICT[args.robot] if args.robot in ROBOT_XML_DICT else args.robot
     ik_config_path = IK_CONFIG_DICT["smplh"][args.robot]
 
     with open(ik_config_path, 'r') as f:
         ik_config = json.load(f)
 
-    console.print(f"  Robot XML: {robot_xml_path}")
+    console.print(f"  Robot model: {robot_model_source}")
     console.print(f"  IK Config: {ik_config_path}")
 
     console.print(f"\n[bold cyan]Step 2: Extracting robot T-pose targets[/bold cyan]")
     target_positions, smpl_joint_names, target_rotations, human_joint_names = get_robot_tpose_targets(
-        robot_xml_path,
+        robot_model,
         args.robot,
         ik_config,
         include_rotations=True,

@@ -4,7 +4,7 @@ import mujoco as mj
 import numpy as np
 import json
 from scipy.spatial.transform import Rotation as R
-from .params import ROBOT_XML_DICT, IK_CONFIG_DICT
+from .params import ROBOT_XML_DICT, ROBOT_MODEL_DICT, IK_CONFIG_DICT, get_robot_model
 from .utils.shape_fitting import load_fitted_shape
 from rich import print
 from mink.tasks.equality_constraint_task import EqualityConstraintTask
@@ -27,10 +27,12 @@ class GeneralMotionRetargeting:
     ) -> None:
 
         # load the robot model
-        self.xml_file = str(ROBOT_XML_DICT[tgt_robot])
+        robot_model = ROBOT_MODEL_DICT[tgt_robot]
+        self.model_source = robot_model if tgt_robot in ROBOT_XML_DICT else tgt_robot
+        self.xml_file = str(self.model_source)
         if verbose:
-            print("Use robot model: ", self.xml_file)
-        self.model = mj.MjModel.from_xml_path(self.xml_file)
+            print("Use robot model: ", self.model_source)
+        self.model = get_robot_model(tgt_robot)
         
         # Print DoF names in order
         print("[GMR] Robot Degrees of Freedom (DoF) names and their order:")
