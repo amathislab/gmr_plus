@@ -24,6 +24,7 @@ class GeneralMotionRetargeting:
         use_velocity_limit: bool=False,
         use_fitted_shape: bool=False,  # Whether using fitted shape
         fitted_shape_path: str=None,
+        ik_config_path: str=None,
     ) -> None:
 
         # load the robot model
@@ -59,10 +60,11 @@ class GeneralMotionRetargeting:
                 print(f"Motor ID {i}: {motor_name}")
 
         # Load the IK config
-        with open(IK_CONFIG_DICT[src_human][tgt_robot]) as f:
+        resolved_ik_config_path = ik_config_path or self._resolve_ik_config_path(src_human, tgt_robot)
+        with open(resolved_ik_config_path) as f:
             ik_config = json.load(f)
         if verbose:
-            print("Use IK config: ", IK_CONFIG_DICT[src_human][tgt_robot])
+            print("Use IK config: ", resolved_ik_config_path)
         # Auto-enable fitted shape if path is provided
         if fitted_shape_path is not None and not use_fitted_shape:
             use_fitted_shape = True
@@ -148,6 +150,10 @@ class GeneralMotionRetargeting:
         self.setup_retarget_configuration()
         
         self.ground_offset = 0.0
+
+    @staticmethod
+    def _resolve_ik_config_path(src_human: str, tgt_robot: str):
+        return IK_CONFIG_DICT[src_human][tgt_robot]
     
     def _add_equality_tasks(self, cur_task):
         model = self.configuration.model

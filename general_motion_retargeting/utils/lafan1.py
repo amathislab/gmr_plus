@@ -14,6 +14,11 @@ def load_bvh_file(bvh_file, format="lafan1"):
         ...
     }
     """
+    if format == "soma":
+        from general_motion_retargeting.utils.soma import load_soma_bvh_file
+
+        return load_soma_bvh_file(bvh_file)
+
     data = read_bvh(bvh_file)
     global_data = utils.quat_fk(data.quats, data.pos, data.parents)
 
