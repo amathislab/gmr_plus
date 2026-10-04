@@ -49,4 +49,4 @@ packages = {find = {}}
 
 [tool.uv.sources]
 smplx = { git = "https://github.com/amathislab/smplx" }
-myo-sim = { git = "https://github.com/MyoHub/myo_sim.git", branch = "dev" }
+myo-sim = { git = "https://github.com/MyoHub/myo_sim.git", branch = "main" }

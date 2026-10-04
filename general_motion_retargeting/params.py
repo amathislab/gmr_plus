@@ -6,9 +6,9 @@ ASSET_ROOT = HERE / ".." / "assets"
 
 
 def get_myo_sim_model(name: str):
-    from myo_sim.build.compose import build_model
+    import myo_sim
 
-    return build_model(name)
+    return myo_sim.load_model(name)
 
 
 ROBOT_MODEL_DICT = {

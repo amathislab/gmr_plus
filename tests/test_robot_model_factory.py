@@ -7,17 +7,9 @@ from pathlib import Path
 def load_params_module(monkeypatch):
     if "myo_sim" not in sys.modules:
         myo_sim = types.ModuleType("myo_sim")
-        compose = types.ModuleType("myo_sim.build.compose")
-        build_package = types.ModuleType("myo_sim.build")
-
         myo_sim.get_xml_path = lambda name: Path(f"/fake/{name}.xml")
-        compose.GENERATE_XML_TARGETS = {}
-        compose.build_model = lambda name: {"model": name}
-        compose.build_generated_model_spec = lambda name: None
-        compose.write_spec_xml = lambda spec, output_path: None
+        myo_sim.load_model = lambda name: {"model": name}
         monkeypatch.setitem(sys.modules, "myo_sim", myo_sim)
-        monkeypatch.setitem(sys.modules, "myo_sim.build", build_package)
-        monkeypatch.setitem(sys.modules, "myo_sim.build.compose", compose)
 
     module_path = Path(__file__).resolve().parents[1] / "general_motion_retargeting" / "params.py"
     module_name = "gmr_params_under_test"
@@ -33,18 +25,14 @@ def test_myofullbody_model_builds_from_myo_sim_mjspec(monkeypatch):
     built_models = []
 
     myo_sim = types.ModuleType("myo_sim")
-    compose = types.ModuleType("myo_sim.build.compose")
-    build_package = types.ModuleType("myo_sim.build")
 
-    def build_model(name):
+    def load_model(name):
         built_models.append(name)
         return {"model": name}
 
     myo_sim.get_xml_path = lambda name: (_ for _ in ()).throw(ValueError(name))
-    compose.build_model = build_model
+    myo_sim.load_model = load_model
     monkeypatch.setitem(sys.modules, "myo_sim", myo_sim)
-    monkeypatch.setitem(sys.modules, "myo_sim.build", build_package)
-    monkeypatch.setitem(sys.modules, "myo_sim.build.compose", compose)
 
     params = load_params_module(monkeypatch)
 
